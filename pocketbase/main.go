@@ -215,6 +215,9 @@ func main() {
 			return handleCostEstimate(c, costEstimator)
 		}, apis.RequireRecordAuth("users"))
 
+		// AI Intelligence Routes
+		controller.RegisterIntelligenceRoutes(app, e.Router)
+
 		// AWS Credentials Routes
 		e.Router.POST("/api/aws/credentials", func(c echo.Context) error {
 			return handleAWSCredentialsCreate(c, credManager)

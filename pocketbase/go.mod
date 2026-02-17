@@ -1,19 +1,22 @@
 module github.com/PranavMagar/autostack
 
-go 1.24
+go 1.23.0
+
+toolchain go1.24.0
 
 require (
-	github.com/aws/aws-sdk-go-v2/service/pricing v1.40.14
+	github.com/aws/aws-sdk-go-v2/service/pricing v1.26.3
 	github.com/caarlos0/env/v8 v8.0.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/labstack/echo/v5 v5.0.0-20230722203903-ec5b858dab61
 	github.com/pocketbase/dbx v1.11.0
-	github.com/pocketbase/pocketbase v0.22.26
+	github.com/pocketbase/pocketbase v0.21.3
 	k8s.io/api v0.32.0
 	k8s.io/apimachinery v0.32.0
 )
 
 require (
+	github.com/aws/aws-sdk-go v1.50.2 // indirect
 	github.com/containerd/stargz-snapshotter/estargz v0.14.3 // indirect
 	github.com/creack/pty v1.1.18 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -31,7 +34,9 @@ require (
 	github.com/google/gnostic-models v0.6.8 // indirect
 	github.com/google/go-cmp v0.6.0 // indirect
 	github.com/google/gofuzz v1.2.0 // indirect
+	github.com/google/wire v0.5.0 // indirect
 	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/compress v1.16.5 // indirect
@@ -44,6 +49,7 @@ require (
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.0-rc3 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
+	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/sirupsen/logrus v1.9.1 // indirect
 	github.com/vbatts/tar-split v0.11.3 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
@@ -66,25 +72,25 @@ require (
 	github.com/AlecAivazis/survey/v2 v2.3.7 // indirect
 	github.com/Masterminds/semver v1.5.0
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
-	github.com/aws/aws-sdk-go-v2 v1.41.4
-	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.4 // indirect
-	github.com/aws/aws-sdk-go-v2/config v1.27.31
-	github.com/aws/aws-sdk-go-v2/credentials v1.17.30
-	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.12 // indirect
-	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.15 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.20 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.20 // indirect
+	github.com/aws/aws-sdk-go-v2 v1.25.0
+	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.6.0 // indirect
+	github.com/aws/aws-sdk-go-v2/config v1.27.1
+	github.com/aws/aws-sdk-go-v2/credentials v1.17.1
+	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.15.0 // indirect
+	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.16.3 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/configsources v1.3.0 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.6.0 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/ini v1.8.1 // indirect
-	github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.16 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.11.4 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.3.18 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.11.18 // indirect
-	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.17.16 // indirect
-	github.com/aws/aws-sdk-go-v2/service/s3 v1.60.1 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sso v1.22.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.26.5 // indirect
-	github.com/aws/aws-sdk-go-v2/service/sts v1.30.5
-	github.com/aws/smithy-go v1.24.2 // indirect
+	github.com/aws/aws-sdk-go-v2/internal/v4a v1.3.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.11.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/checksum v1.3.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.11.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/internal/s3shared v1.17.0 // indirect
+	github.com/aws/aws-sdk-go-v2/service/s3 v1.50.2 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sso v1.19.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.22.1 // indirect
+	github.com/aws/aws-sdk-go-v2/service/sts v1.27.1
+	github.com/aws/smithy-go v1.20.0 // indirect
 	github.com/disintegration/imaging v1.6.2 // indirect
 	github.com/dlclark/regexp2 v1.11.4 // indirect
 	github.com/domodwyer/mailyak/v3 v3.6.2 // indirect
@@ -118,7 +124,7 @@ require (
 	github.com/valyala/bytebufferpool v1.0.0 // indirect
 	github.com/valyala/fasttemplate v1.2.2 // indirect
 	go.opencensus.io v0.24.0 // indirect
-	gocloud.dev v0.39.0 // indirect
+	gocloud.dev v0.36.0 // indirect
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/image v0.19.0 // indirect
 	golang.org/x/net v0.33.0 // indirect

@@ -1,1 +1,91 @@
+# OS Files
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# Logs
+*.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Go
+*.test
+*.out
+go.work
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+pocketbase/pb_data/data.db*
+pocketbase/pb_data/logs.db*
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.crt
+rootkey.csv
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.cache
+
+# Archives
+*.tar.gz
+*.zip
+*.rar
+go*.linux-*.tar.gz
+
+# Documentation - Progress/Summary files (keep only essential docs)
+*_COMPLETE.md
+*_SUMMARY.md
+*_PROGRESS.md
+*_REPORT.md
+*_JOURNEY.md
+*_CHECKLIST.md
+AUTOSTACK_MASTER_PLAN*.md
+COMPLETE_*.md
+FINAL_*.md
+IMPLEMENTATION_*.md
+INTELLIGENCE_*.md
+PHASE*_COMPLETE.md
+REPORT_*.md
+SIDE_PROJECTS_*.md
+SYSTEM_*.md
+WEEK*_*.md
+AI_INTELLIGENCE_*.md
+AWS_COST_ESTIMATION_PHASE*.md
+DEMO_SCRIPT.md
+
+# Side projects
+side projects/
+
+# Kiro specific (optional - uncomment if you don't want to share)
+# .kiro/
