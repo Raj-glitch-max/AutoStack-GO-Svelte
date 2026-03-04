@@ -1,4 +1,4 @@
-how much percentage of work is this compare to ovjective migrate((db) => {
+migrate((db) => {
   const dao = new Dao(db);
   
   // Create a system user for blueprints
