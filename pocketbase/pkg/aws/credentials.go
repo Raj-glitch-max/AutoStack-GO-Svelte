@@ -26,10 +26,12 @@ type CredentialManager struct {
 }
 
 type AWSCredentials struct {
-	AccessKeyID     string
-	SecretAccessKey string
-	SessionToken    string
-	Region          string
+	AccessKeyID      string
+	SecretAccessKey  string
+	SessionToken     string
+	Region           string
+	StateBucketName  string // User's S3 bucket for Terraform state (BYOC)
+	StateDynamoTable string // User's DynamoDB table for state locking (BYOC)
 }
 
 type ValidationResult struct {
@@ -184,10 +186,12 @@ func (cm *CredentialManager) GetCredentials(userID string) (*AWSCredentials, err
 	}
 
 	return &AWSCredentials{
-		AccessKeyID:     accessKeyID,
-		SecretAccessKey: secretAccessKey,
-		SessionToken:    sessionToken,
-		Region:          record.GetString("region"),
+		AccessKeyID:      accessKeyID,
+		SecretAccessKey:  secretAccessKey,
+		SessionToken:     sessionToken,
+		Region:           record.GetString("region"),
+		StateBucketName:  record.GetString("stateBucketName"),
+		StateDynamoTable: record.GetString("stateDynamoTable"),
 	}, nil
 }
 
