@@ -22,6 +22,8 @@ type AWSDeploymentController struct {
 	credManager     *aws.CredentialManager
 	terraformExec   *terraform.ExecutorService
 	logStreamer     terraform.LogStreamer
+	// WEEK 2 TASK 2.4: Confirmation timeout tracking
+	planConfirmations map[string]*planConfirmation
 }
 
 type CreateAWSDeploymentRequest struct {
@@ -30,6 +32,14 @@ type CreateAWSDeploymentRequest struct {
 	BlueprintID   string                 `json:"blueprint"`
 	Region        string                 `json:"region"`
 	Configuration map[string]interface{} `json:"configuration"`
+}
+
+// WEEK 2 TASK 2.4: Plan confirmation tracking
+type planConfirmation struct {
+	deploymentID string
+	userID       string
+	createdAt    time.Time
+	timer        *time.Timer
 }
 
 type AWSDeploymentResponse struct {
@@ -45,14 +55,16 @@ type AWSDeploymentResponse struct {
 
 func NewAWSDeploymentController(app *pocketbase.PocketBase, credManager *aws.CredentialManager, terraformExec *terraform.ExecutorService, logStreamer terraform.LogStreamer) *AWSDeploymentController {
 	return &AWSDeploymentController{
-		app:           app,
-		credManager:   credManager,
-		terraformExec: terraformExec,
-		logStreamer:   logStreamer,
+		app:               app,
+		credManager:       credManager,
+		terraformExec:     terraformExec,
+		logStreamer:       logStreamer,
+		planConfirmations: make(map[string]*planConfirmation),
 	}
 }
 
 // HandleAWSDeploymentCreate handles the creation of AWS deployments
+// WEEK 3 TASK 3.1: Prevents concurrent deployments for the same user
 func (c *AWSDeploymentController) HandleAWSDeploymentCreate(ctx echo.Context) error {
 	var req CreateAWSDeploymentRequest
 	if err := ctx.Bind(&req); err != nil {
@@ -63,6 +75,21 @@ func (c *AWSDeploymentController) HandleAWSDeploymentCreate(ctx echo.Context) er
 	user := ctx.Get("user").(*models.Record)
 	if user == nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "Authentication required")
+	}
+
+	// WEEK 3 TASK 3.1: Check for concurrent deployments
+	// Prevent Terraform state lock conflicts by allowing only one active deployment per user
+	hasActiveDeployment, err := c.hasActiveDeployment(user.Id)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to check deployment status")
+	}
+	if hasActiveDeployment {
+		return echo.NewHTTPError(http.StatusConflict, map[string]interface{}{
+			"error": map[string]string{
+				"code":    "DEPLOYMENT_IN_PROGRESS",
+				"message": "Wait for current deployment to complete",
+			},
+		})
 	}
 
 	// Validate user has AWS credentials
@@ -119,6 +146,27 @@ func (c *AWSDeploymentController) HandleAWSDeploymentCreate(ctx echo.Context) er
 		"id":     deploymentID,
 		"status": "pending",
 	})
+}
+
+// hasActiveDeployment checks if user has any deployment in progress
+// WEEK 3 TASK 3.1: Concurrent deployment prevention
+func (c *AWSDeploymentController) hasActiveDeployment(userID string) (bool, error) {
+	// Check for deployments in active states
+	activeStatuses := []string{"planning", "planned", "applying"}
+	
+	for _, status := range activeStatuses {
+		deployments, err := c.app.Dao().FindRecordsByExpr("awsDeployments",
+			dbx.NewExp("user = {:user} AND status = {:status}",
+				dbx.Params{"user": userID, "status": status}))
+		if err != nil {
+			return false, err
+		}
+		if len(deployments) > 0 {
+			return true, nil
+		}
+	}
+	
+	return false, nil
 }
 
 // HandleAWSDeploymentList lists AWS deployments for a project
@@ -263,6 +311,7 @@ func (c *AWSDeploymentController) HandleAWSDeploymentDelete(ctx echo.Context) er
 }
 
 // HandleAWSDeploymentPlan generates a Terraform plan
+// WEEK 2 TASK 2.1: Implements confirmation gate (planning → planned → waiting for user confirmation)
 func (c *AWSDeploymentController) HandleAWSDeploymentPlan(ctx echo.Context) error {
 	user := ctx.Get("user").(*models.Record)
 	if user == nil {
@@ -300,34 +349,100 @@ func (c *AWSDeploymentController) HandleAWSDeploymentPlan(ctx echo.Context) erro
 		DeploymentID: deploymentID,
 	}
 
-	// Update deployment status
+	// WEEK 2 TASK 2.1: Update deployment status to "planning"
 	deployment.Set("status", "planning")
 	c.app.Dao().SaveRecord(deployment)
 
 	// Execute plan
-	result, err := c.terraformExec.Plan(context.Background(), deploymentID, tfConfig, c.logStreamer)
+	result, err := c.terraformExec.Plan(context.Background(), deploymentID, user.Id, tfConfig, c.logStreamer)
 	if err != nil {
 		deployment.Set("status", "failed")
+		deployment.Set("errorMessage", fmt.Sprintf("Plan failed: %v", err))
 		c.app.Dao().SaveRecord(deployment)
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Plan failed: %v", err))
 	}
 
-	status := "planned"
 	if result.ExitCode != 0 {
-		status = "failed"
+		deployment.Set("status", "failed")
+		deployment.Set("errorMessage", "Terraform plan failed")
+		c.app.Dao().SaveRecord(deployment)
+		return echo.NewHTTPError(http.StatusInternalServerError, "Terraform plan failed")
 	}
 
-	deployment.Set("status", status)
+	// WEEK 2 TASK 2.1: Update status to "planned" - waiting for user confirmation
+	deployment.Set("status", "planned")
 	c.app.Dao().SaveRecord(deployment)
+
+	// WEEK 2 TASK 2.4: Start confirmation timeout (10 minutes)
+	c.startConfirmationTimeout(deploymentID, user.Id)
 
 	return ctx.JSON(http.StatusOK, map[string]interface{}{
 		"exitCode": result.ExitCode,
 		"output":   result.Output,
 		"duration": result.Duration.String(),
+		"status":   "planned",
+		"message":  "Plan complete - waiting for user confirmation",
 	})
 }
 
+// startConfirmationTimeout starts a 10-minute timeout for plan confirmation
+// WEEK 2 TASK 2.4: Add confirmation timeout
+func (c *AWSDeploymentController) startConfirmationTimeout(deploymentID, userID string) {
+	// Cancel any existing timeout for this deployment
+	if existing, ok := c.planConfirmations[deploymentID]; ok {
+		if existing.timer != nil {
+			existing.timer.Stop()
+		}
+	}
+
+	// Create new confirmation tracking
+	confirmation := &planConfirmation{
+		deploymentID: deploymentID,
+		userID:       userID,
+		createdAt:    time.Now(),
+	}
+
+	// Set 10-minute timeout
+	confirmation.timer = time.AfterFunc(10*time.Minute, func() {
+		c.handleConfirmationTimeout(deploymentID)
+	})
+
+	c.planConfirmations[deploymentID] = confirmation
+}
+
+// handleConfirmationTimeout handles the case when user doesn't confirm within 10 minutes
+// WEEK 2 TASK 2.4: Add confirmation timeout
+func (c *AWSDeploymentController) handleConfirmationTimeout(deploymentID string) {
+	deployment, err := c.app.Dao().FindRecordById("awsDeployments", deploymentID)
+	if err != nil {
+		log.Printf("Failed to find deployment %s for timeout: %v", deploymentID, err)
+		return
+	}
+
+	// Only timeout if still in "planned" status
+	if deployment.GetString("status") == "planned" {
+		deployment.Set("status", "failed")
+		deployment.Set("errorMessage", "Plan expired - user did not confirm within 10 minutes")
+		c.app.Dao().SaveRecord(deployment)
+
+		// Cleanup working directory
+		go c.terraformExec.CleanupWorkingDir(deploymentID)
+
+		// Send WebSocket notification if streamer available
+		if c.logStreamer != nil {
+			c.logStreamer.StreamLog(deploymentID, "", "timeout", "error", 
+				"Plan expired - user did not confirm within 10 minutes")
+		}
+
+		log.Printf("Deployment %s timed out - plan not confirmed within 10 minutes", deploymentID)
+	}
+
+	// Remove from tracking
+	delete(c.planConfirmations, deploymentID)
+}
+
 // HandleAWSDeploymentApply applies the Terraform configuration
+// WEEK 2 TASK 2.1: Implements confirmation gate - user must explicitly confirm plan
 func (c *AWSDeploymentController) HandleAWSDeploymentApply(ctx echo.Context) error {
 	user := ctx.Get("user").(*models.Record)
 	if user == nil {
@@ -344,6 +459,26 @@ func (c *AWSDeploymentController) HandleAWSDeploymentApply(ctx echo.Context) err
 		return echo.NewHTTPError(http.StatusForbidden, "Access denied")
 	}
 
+	// WEEK 2 TASK 2.1: Verify deployment is in "planned" status
+	// This ensures user has seen the plan before applying
+	if deployment.GetString("status") != "planned" {
+		return echo.NewHTTPError(http.StatusBadRequest, 
+			fmt.Sprintf("Cannot apply deployment in status '%s'. Must be in 'planned' status.", 
+				deployment.GetString("status")))
+	}
+
+	// WEEK 2 TASK 2.4: Cancel confirmation timeout since user confirmed
+	if confirmation, ok := c.planConfirmations[deploymentID]; ok {
+		if confirmation.timer != nil {
+			confirmation.timer.Stop()
+		}
+		delete(c.planConfirmations, deploymentID)
+	}
+
+	// WEEK 2 TASK 2.1: Update status to "applying"
+	deployment.Set("status", "applying")
+	c.app.Dao().SaveRecord(deployment)
+
 	// Create new rollout for apply operation
 	rolloutID := util.GenerateId(15)
 	go c.executeApply(deploymentID, rolloutID, user.Id)
@@ -351,6 +486,7 @@ func (c *AWSDeploymentController) HandleAWSDeploymentApply(ctx echo.Context) err
 	return ctx.JSON(http.StatusAccepted, map[string]interface{}{
 		"rolloutId": rolloutID,
 		"status":    "applying",
+		"message":   "Apply started - infrastructure is being created",
 	})
 }
 
@@ -409,23 +545,40 @@ func (c *AWSDeploymentController) createInitialRollout(deploymentID, userID, pro
 	}
 
 	// Initialize Terraform
-	if _, err := c.terraformExec.Init(context.Background(), deploymentID, c.logStreamer); err != nil {
+	if _, err := c.terraformExec.Init(context.Background(), deploymentID, userID, c.logStreamer); err != nil {
 		log.Printf("Terraform init failed: %v", err)
-		c.updateDeploymentStatus(deploymentID, "failed")
+		c.updateDeploymentStatus(deploymentID, "failed", fmt.Sprintf("Init failed: %v", err))
 		return
 	}
 
-	c.updateDeploymentStatus(deploymentID, "planned")
+	c.updateDeploymentStatus(deploymentID, "planned", "")
 }
 
 // executeApply executes the Terraform apply operation
+// WEEK 2 TASK 2.2: Auto-destroy on apply failure is handled in executor.Apply()
 func (c *AWSDeploymentController) executeApply(deploymentID, rolloutID, userID string) {
-	c.updateDeploymentStatus(deploymentID, "applying")
+	// Add panic recovery as per master plan error handling rules
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("deployment goroutine panicked: deploymentID=%s panic=%v", deploymentID, r)
+			c.updateDeploymentStatus(deploymentID, "failed", "internal error")
+			if c.logStreamer != nil {
+				c.logStreamer.StreamLog(deploymentID, rolloutID, "apply", "error", "internal error")
+			}
+		}
+	}()
 
-	result, err := c.terraformExec.Apply(context.Background(), deploymentID, rolloutID, true, c.logStreamer)
+	c.updateDeploymentStatus(deploymentID, "applying", "")
+
+	// WEEK 2 TASK 2.2: Apply now includes auto-destroy on failure
+	result, err := c.terraformExec.Apply(context.Background(), deploymentID, rolloutID, userID, true, c.logStreamer)
 	if err != nil || result.ExitCode != 0 {
 		log.Printf("Terraform apply failed: %v", err)
-		c.updateDeploymentStatus(deploymentID, "failed")
+		errorMsg := "Terraform apply failed"
+		if err != nil {
+			errorMsg = fmt.Sprintf("Terraform apply failed: %v", err)
+		}
+		c.updateDeploymentStatus(deploymentID, "failed", errorMsg)
 		return
 	}
 
@@ -441,24 +594,40 @@ func (c *AWSDeploymentController) executeApply(deploymentID, rolloutID, userID s
 		outputsJSON, _ := json.Marshal(outputs)
 		deployment.Set("outputs", string(outputsJSON))
 		deployment.Set("status", "active")
+		deployment.Set("errorMessage", "")
 		c.app.Dao().SaveRecord(deployment)
 	}
 }
 
 // executeDestroy executes the Terraform destroy operation
 func (c *AWSDeploymentController) executeDestroy(deploymentID, rolloutID, userID string) {
-	result, err := c.terraformExec.Destroy(context.Background(), deploymentID, rolloutID, true, c.logStreamer)
+	// Add panic recovery as per master plan error handling rules
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("destroy goroutine panicked: deploymentID=%s panic=%v", deploymentID, r)
+			c.updateDeploymentStatus(deploymentID, "failed", "internal error during destroy")
+			if c.logStreamer != nil {
+				c.logStreamer.StreamLog(deploymentID, rolloutID, "destroy", "error", "internal error")
+			}
+		}
+	}()
+
+	result, err := c.terraformExec.Destroy(context.Background(), deploymentID, rolloutID, userID, true, c.logStreamer)
 	if err != nil || result.ExitCode != 0 {
 		log.Printf("Terraform destroy failed: %v", err)
-		c.updateDeploymentStatus(deploymentID, "failed")
+		errorMsg := "Terraform destroy failed"
+		if err != nil {
+			errorMsg = fmt.Sprintf("Terraform destroy failed: %v", err)
+		}
+		c.updateDeploymentStatus(deploymentID, "failed", errorMsg)
 		return
 	}
 
-	c.updateDeploymentStatus(deploymentID, "destroyed")
+	c.updateDeploymentStatus(deploymentID, "destroyed", "")
 }
 
 // updateDeploymentStatus updates the deployment status
-func (c *AWSDeploymentController) updateDeploymentStatus(deploymentID, status string) {
+func (c *AWSDeploymentController) updateDeploymentStatus(deploymentID, status string, errorMessage string) {
 	deployment, err := c.app.Dao().FindRecordById("awsDeployments", deploymentID)
 	if err != nil {
 		log.Printf("Failed to find deployment %s: %v", deploymentID, err)
@@ -466,7 +635,13 @@ func (c *AWSDeploymentController) updateDeploymentStatus(deploymentID, status st
 	}
 
 	deployment.Set("status", status)
+	if errorMessage != "" {
+		deployment.Set("errorMessage", errorMessage)
+	}
 	if err := c.app.Dao().SaveRecord(deployment); err != nil {
 		log.Printf("Failed to update deployment status: %v", err)
 	}
 }
+
+// WEEK 3 TASK 3.1: Test helper for concurrent deployment prevention
+// This would be used in integration tests to verify the 409 response
