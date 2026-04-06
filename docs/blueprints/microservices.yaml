@@ -1,0 +1,264 @@
+apiVersion: v1
+kind: List
+metadata:
+  name: microservices-app
+  description: "Microservices architecture with multiple services"
+items:
+# Redis Cache
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: redis
+    labels:
+      app: redis
+      tier: cache
+  spec:
+    replicas: 1
+    selector:
+      matchLabels:
+        app: redis
+    template:
+      metadata:
+        labels:
+          app: redis
+          tier: cache
+      spec:
+        containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+          - containerPort: 6379
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: redis-service
+  spec:
+    type: ClusterIP
+    ports:
+    - port: 6379
+      targetPort: 6379
+    selector:
+      app: redis
+
+# User Service
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: user-service
+    labels:
+      app: user-service
+      tier: backend
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: user-service
+    template:
+      metadata:
+        labels:
+          app: user-service
+          tier: backend
+      spec:
+        containers:
+        - name: user-service
+          image: user-service:latest
+          ports:
+          - containerPort: 8080
+          env:
+          - name: REDIS_URL
+            value: "redis://redis-service:6379"
+          - name: SERVICE_NAME
+            value: "user-service"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: user-service
+    labels:
+      app: user-service
+  spec:
+    type: ClusterIP
+    ports:
+    - port: 8080
+      targetPort: 8080
+    selector:
+      app: user-service
+
+# Order Service
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: order-service
+    labels:
+      app: order-service
+      tier: backend
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: order-service
+    template:
+      metadata:
+        labels:
+          app: order-service
+          tier: backend
+      spec:
+        containers:
+        - name: order-service
+          image: order-service:latest
+          ports:
+          - containerPort: 8081
+          env:
+          - name: USER_SERVICE_URL
+            value: "http://user-service:8080"
+          - name: REDIS_URL
+            value: "redis://redis-service:6379"
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "200m"
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: order-service
+    labels:
+      app: order-service
+  spec:
+    type: ClusterIP
+    ports:
+    - port: 8081
+      targetPort: 8081
+    selector:
+      app: order-service
+
+# API Gateway
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    name: api-gateway
+    labels:
+      app: api-gateway
+      tier: gateway
+  spec:
+    replicas: 2
+    selector:
+      matchLabels:
+        app: api-gateway
+    template:
+      metadata:
+        labels:
+          app: api-gateway
+          tier: gateway
+      spec:
+        containers:
+        - name: api-gateway
+          image: nginx:1.21-alpine
+          ports:
+          - containerPort: 80
+          volumeMounts:
+          - name: gateway-config
+            mountPath: /etc/nginx/conf.d
+        volumes:
+        - name: gateway-config
+          configMap:
+            name: gateway-config
+
+- apiVersion: v1
+  kind: ConfigMap
+  metadata:
+    name: gateway-config
+  data:
+    default.conf: |
+      upstream user_service {
+          server user-service:8080;
+      }
+      
+      upstream order_service {
+          server order-service:8081;
+      }
+      
+      server {
+          listen 80;
+          
+          location /api/users/ {
+              proxy_pass http://user_service/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+          }
+          
+          location /api/orders/ {
+              proxy_pass http://order_service/;
+              proxy_set_header Host $host;
+              proxy_set_header X-Real-IP $remote_addr;
+          }
+          
+          location /health {
+              return 200 "OK";
+              add_header Content-Type text/plain;
+          }
+      }
+
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: api-gateway-service
+    labels:
+      app: api-gateway
+  spec:
+    type: LoadBalancer
+    ports:
+    - port: 80
+      targetPort: 80
+    selector:
+      app: api-gateway
+
+# Horizontal Pod Autoscaler
+- apiVersion: autoscaling/v2
+  kind: HorizontalPodAutoscaler
+  metadata:
+    name: user-service-hpa
+  spec:
+    scaleTargetRef:
+      apiVersion: apps/v1
+      kind: Deployment
+      name: user-service
+    minReplicas: 2
+    maxReplicas: 10
+    metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80

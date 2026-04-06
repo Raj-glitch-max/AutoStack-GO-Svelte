@@ -1,0 +1,26 @@
+services:
+  pocketbase:
+    build:
+      context: .
+      dockerfile: Dockerfile.combined
+    ports:
+      - "8090:8090"
+    environment:
+      - LOCAL=true
+      - LOCAL_KUBECONFIG_FILE=/root/.kube/config
+      - AWS_INTEGRATION_ENABLED=true
+    volumes:
+      - autostack-data:/app/pb_data
+      - autostack-terraform:/app/terraform-workdir
+      - ~/.kube/config:/root/.kube/config:ro
+      - ./rootkey.csv:/app/rootkey.csv:ro
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  autostack-data:
+  autostack-terraform:

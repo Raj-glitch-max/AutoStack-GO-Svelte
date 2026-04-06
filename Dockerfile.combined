@@ -1,0 +1,46 @@
+# Stage 1: Build frontend
+FROM node:lts-slim AS frontend-builder
+WORKDIR /app
+COPY frontend/package*.json ./
+RUN npm install
+COPY frontend/ .
+RUN npm run build
+
+# Stage 2: Build backend
+FROM golang:latest AS backend-builder
+WORKDIR /app
+RUN apt-get update && apt-get install -y ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
+COPY pocketbase/go.mod pocketbase/go.sum ./
+RUN go mod download
+COPY pocketbase/ .
+RUN go mod tidy
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o autostack .
+
+# Stage 3: Final runtime
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
+
+# Install Terraform
+RUN curl -fsSL https://releases.hashicorp.com/terraform/1.6.6/terraform_1.6.6_linux_amd64.zip -o terraform.zip && \
+    unzip terraform.zip && \
+    mv terraform /usr/local/bin/ && \
+    rm terraform.zip
+
+WORKDIR /app
+
+# Copy backend binary
+COPY --from=backend-builder /app/autostack .
+
+# Copy backend files
+COPY --from=backend-builder /app/pb_migrations ./pb_migrations
+COPY --from=backend-builder /app/templates ./templates
+
+# Copy frontend build
+COPY --from=frontend-builder /app/build ./pb_public
+
+# Create directories
+RUN mkdir -p pb_data terraform-workdir
+
+EXPOSE 8090
+
+CMD ["./autostack", "serve", "--http=0.0.0.0:8090", "--publicDir=/app/pb_public"]
