@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/PranavMagar/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/autostack/pkg/aws"
 )
 
 // TestBuildSafeEnvNoPropagation verifies that buildSafeEnv does not include os.Environ() variables

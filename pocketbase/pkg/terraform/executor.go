@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/PranavMagar/autostack/pkg/aws"
-	"github.com/PranavMagar/autostack/pkg/intelligence"
+	"github.com/Raj-glitch-max/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/autostack/pkg/intelligence"
 	"github.com/pocketbase/pocketbase/models"
 )
 

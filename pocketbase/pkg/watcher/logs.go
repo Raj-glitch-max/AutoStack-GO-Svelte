@@ -7,7 +7,7 @@ import (
 	"net/http"
 
 	"github.com/gorilla/websocket"
-	"github.com/PranavMagar/autostack/pkg/k8s"
+	"github.com/Raj-glitch-max/autostack/pkg/k8s"
 	"github.com/labstack/echo/v5"
 )
 

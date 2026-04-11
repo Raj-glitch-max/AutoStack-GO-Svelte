@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 80" width="320" height="80">
+  <defs>
+    <style>
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&amp;display=swap');
+    </style>
+  </defs>
+
+  <!-- Stack icon: 3 layered parallelogram slabs -->
+  <!-- Bottom slab (lightest) -->
+  <g transform="translate(12, 18)">
+    <!-- Slab 3 bottom -->
+    <polygon points="28,46 0,38 28,30 56,38" fill="#BBBAB4"/>
+    <polygon points="28,46 56,38 56,32 28,40" fill="#888780"/>
+    <polygon points="0,38 28,30 28,40 0,44" fill="#D3D1C7"/>
+
+    <!-- Slab 2 middle -->
+    <polygon points="28,33 0,25 28,17 56,25" fill="#D3D1C7"/>
+    <polygon points="28,33 56,25 56,19 28,27" fill="#888780"/>
+    <polygon points="0,25 28,17 28,27 0,31" fill="#F1EFE8"/>
+
+    <!-- Slab 1 top -->
+    <polygon points="28,20 0,12 28,4 56,12" fill="#F1EFE8"/>
+    <polygon points="28,20 56,12 56,6 28,14" fill="#BBBAB4"/>
+    <polygon points="0,12 28,4 28,14 0,18" fill="#FFFFFF"/>
+
+    <!-- Arrow pointing up (deploy / launch concept) -->
+    <!-- Arrow shaft -->
+    <rect x="24" y="0" width="6" height="12" fill="#444441" rx="1"/>
+    <!-- Arrow head -->
+    <polygon points="27,-2 21,6 33,6" fill="#444441"/>
+    <!-- Small deploy dot on top slab -->
+    <circle cx="28" cy="12" r="3" fill="#444441"/>
+  </g>
+
+  <!-- Wordmark: AutoStack -->
+  <!-- "Auto" lighter weight, "Stack" heavier -->
+  <text
+    x="82" y="38"
+    font-family="'Inter', 'Helvetica Neue', Arial, sans-serif"
+    font-size="26"
+    font-weight="400"
+    letter-spacing="-0.5"
+    fill="#5F5E5A"
+  >Auto</text>
+  <text
+    x="144" y="38"
+    font-family="'Inter', 'Helvetica Neue', Arial, sans-serif"
+    font-size="26"
+    font-weight="700"
+    letter-spacing="-0.5"
+    fill="#2C2C2A"
+  >Stack</text>
+
+  <!-- Tagline -->
+  <text
+    x="82" y="56"
+    font-family="'Inter', 'Helvetica Neue', Arial, sans-serif"
+    font-size="10"
+    font-weight="400"
+    letter-spacing="2.2"
+    fill="#888780"
+  >DEPLOY IN ONE CLICK</text>
+
+  <!-- Thin separator line under icon -->
+  <line x1="12" y1="72" x2="68" y2="72" stroke="#D3D1C7" stroke-width="0.75"/>
+</svg>

@@ -3,7 +3,7 @@ package controller
 import (
 	"log"
 
-	"github.com/PranavMagar/autostack/pkg/k8s"
+	"github.com/Raj-glitch-max/autostack/pkg/k8s"
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"

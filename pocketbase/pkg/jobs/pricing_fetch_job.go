@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/PranavMagar/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/autostack/pkg/aws"
 )
 
 // createPricingFetchJob creates the daily pricing fetch job function

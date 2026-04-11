@@ -5,7 +5,7 @@ import (
 	"math"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/PranavMagar/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/autostack/pkg/aws"
 )
 
 // FargateCostCalculator calculates costs for AWS Fargate

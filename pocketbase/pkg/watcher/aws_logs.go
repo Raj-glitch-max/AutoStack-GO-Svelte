@@ -4,8 +4,8 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/PranavMagar/autostack/pkg/middleware"
-	"github.com/PranavMagar/autostack/pkg/terraform"
+	"github.com/Raj-glitch-max/autostack/pkg/middleware"
+	"github.com/Raj-glitch-max/autostack/pkg/terraform"
 	"github.com/gorilla/websocket"
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase/models"

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/PranavMagar/autostack/pkg/util"
+	"github.com/Raj-glitch-max/autostack/pkg/util"
 	"github.com/pocketbase/pocketbase/models"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"

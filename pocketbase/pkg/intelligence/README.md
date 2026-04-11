@@ -24,7 +24,7 @@ Analyzes error logs and provides detailed diagnostics.
 
 **Usage:**
 ```go
-import "github.com/PranavMagar/autostack/pkg/intelligence"
+import "github.com/Raj-glitch-max/autostack/pkg/intelligence"
 
 analyzer := intelligence.NewErrorAnalyzer()
 analysis := analyzer.AnalyzeTerraformError(ctx, errorLogs)

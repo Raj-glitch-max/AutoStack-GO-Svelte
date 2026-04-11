@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"github.com/PranavMagar/autostack/pkg/crypto"
-	"github.com/PranavMagar/autostack/pkg/terraform"
+	"github.com/Raj-glitch-max/autostack/pkg/crypto"
+	"github.com/Raj-glitch-max/autostack/pkg/terraform"
 )
 
 // ValidationResult contains the results of startup validation

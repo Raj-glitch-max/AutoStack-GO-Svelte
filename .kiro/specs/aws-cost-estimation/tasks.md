@@ -114,7 +114,7 @@
 - [x] Define cost calculation rules for "web-application" blueprint  
   - **Validates**: TR-2.1 (Web App: Fargate vCPU, memory, ALB, RDS, NAT gateway, CloudWatch logs, ECR)
   - **Files**: `pocketbase/pkg/cost/blueprint_web_app.go`
-- [-] Define cost calculation rules for "full-stack-app" blueprint
+- [ ] Define cost calculation rules for "full-stack-app" blueprint
   - **Validates**: TR-2.1 (Full-Stack: All of above + additional services)
   - **Files**: `pocketbase/pkg/cost/blueprint_full_stack.go`
 - [ ] Define cost calculation rules for "microservices" blueprint
