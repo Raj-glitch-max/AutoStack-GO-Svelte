@@ -17,6 +17,7 @@
     Globe
   } from 'lucide-svelte';
   import toast from 'svelte-french-toast';
+  import ErrorAnalysis from '$lib/components/intelligence/ErrorAnalysis.svelte';
   
   export let deploymentId: string;
   
@@ -414,6 +415,16 @@
           </div>
         </Card>
       </TabItem>
+      
+      <!-- Error Analysis Tab - Only show if deployment failed -->
+      {#if deployment.status === 'failed' && logs.length > 0}
+        <TabItem value="analysis" title="Error Analysis">
+          <ErrorAnalysis 
+            deploymentId={deployment.id} 
+            errorLogs={logs.join('\n')} 
+          />
+        </TabItem>
+      {/if}
     </Tabs>
   </div>
 {:else}
