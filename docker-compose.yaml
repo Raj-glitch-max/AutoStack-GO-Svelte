@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile.combined
     ports:
       - "8090:8090"
+    env_file:
+      - .env
     environment:
       - LOCAL=true
       - LOCAL_KUBECONFIG_FILE=/root/.kube/config

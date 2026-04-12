@@ -2,18 +2,19 @@ package main
 
 import (
 	"crypto/rand"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
-	"github.com/Raj-glitch-max/autostack/pkg/controller"
-	"github.com/Raj-glitch-max/autostack/pkg/env"
-	"github.com/Raj-glitch-max/autostack/pkg/k8s"
-	"github.com/Raj-glitch-max/autostack/pkg/terraform"
-	"github.com/Raj-glitch-max/autostack/pkg/watcher"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/controller"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/env"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/k8s"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/terraform"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/watcher"
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
@@ -65,10 +66,13 @@ func main() {
 	logStreamer := watcher.GetAWSLogStreamer()
 	
 	awsController := controller.NewAWSDeploymentController(app, credManager, terraformExec, logStreamer)
-	costEstimator, err := aws.NewCostEstimatorService("us-east-1")
-	if err != nil {
-		log.Fatal("Failed to initialize cost estimator:", err)
+	
+	// Initialize Infracost service for cost estimation
+	infracostAPIKey := os.Getenv("INFRACOST_API_KEY")
+	if infracostAPIKey == "" {
+		log.Println("[WARNING] INFRACOST_API_KEY not set - cost estimation will be unavailable")
 	}
+	infracostService := aws.NewInfracostService(infracostAPIKey)
 
 	// load js files to allow loading external JavaScript migrations
 	jsvm.MustRegister(app, jsvm.Config{
@@ -212,7 +216,7 @@ func main() {
 
 		// AWS Cost Estimation
 		e.Router.POST("/api/aws/cost-estimate", func(c echo.Context) error {
-			return handleCostEstimate(c, costEstimator)
+			return handleCostEstimate(c, infracostService)
 		}, apis.RequireRecordAuth("users"))
 
 		// AI Intelligence Routes
@@ -346,36 +350,62 @@ func handleAWSCredentialsStatus(c echo.Context, credManager *aws.CredentialManag
 	})
 }
 
-// handleCostEstimate handles cost estimation requests
-func handleCostEstimate(c echo.Context, costEstimator *aws.CostEstimatorService) error {
-	var req aws.DeploymentConfiguration
+// handleCostEstimate handles cost estimation requests using Infracost
+func handleCostEstimate(c echo.Context, infracostService *aws.InfracostService) error {
+	var req struct {
+		TerraformCode string `json:"terraform_code"`
+		Blueprint     string `json:"blueprint"`
+		Region        string `json:"region"`
+	}
+	
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request body")
 	}
-
-	if costEstimator == nil {
-		// Fallback cost estimates
-		fallbackEstimate := &aws.CostEstimate{
-			TotalMonthlyCost: getFallbackCost(req.Blueprint),
-			Breakdown: map[string]float64{
+	
+	// Validate region
+	if req.Region == "" {
+		req.Region = "us-east-1" // Default region
+	}
+	
+	// If terraform_code not provided, try to load from blueprint
+	if req.TerraformCode == "" && req.Blueprint != "" {
+		templatePath := fmt.Sprintf("./pocketbase/templates/%s.tf", req.Blueprint)
+		templateBytes, err := os.ReadFile(templatePath)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, fmt.Sprintf("Blueprint '%s' not found", req.Blueprint))
+		}
+		req.TerraformCode = string(templateBytes)
+	}
+	
+	if req.TerraformCode == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "Either terraform_code or blueprint must be provided")
+	}
+	
+	// Check if Infracost service is available
+	if infracostService == nil || os.Getenv("INFRACOST_API_KEY") == "" {
+		// Return fallback estimate
+		return c.JSON(http.StatusOK, map[string]interface{}{
+			"totalMonthlyCost": getFallbackCost(req.Blueprint),
+			"breakdown": map[string]float64{
 				"Estimated Base Cost": getFallbackCost(req.Blueprint),
 			},
-			Currency:   "USD",
-			Region:     req.Region,
-			Disclaimer: "Cost estimator service unavailable. Showing approximate estimates.",
-		}
-		return c.JSON(http.StatusOK, fallbackEstimate)
+			"currency":   "USD",
+			"region":     req.Region,
+			"disclaimer": "Infracost API key not configured. Showing approximate estimates. Configure INFRACOST_API_KEY for accurate pricing.",
+		})
 	}
-
-	estimate, err := costEstimator.EstimateCost(req)
+	
+	// Call Infracost API
+	estimate, err := infracostService.EstimateCost(c.Request().Context(), req.TerraformCode, req.Region)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to estimate costs")
+		log.Printf("[Cost Estimate] Infracost API error: %v", err)
+		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Failed to estimate cost: %v", err))
 	}
-
+	
 	return c.JSON(http.StatusOK, estimate)
 }
 
-// getFallbackCost provides fallback cost estimates
+// getFallbackCost provides fallback cost estimates when Infracost is unavailable
 func getFallbackCost(blueprint string) float64 {
 	switch blueprint {
 	case "ecs-web-app":

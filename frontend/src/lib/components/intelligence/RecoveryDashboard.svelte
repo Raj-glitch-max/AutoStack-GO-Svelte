@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
-	import { pb } from '$lib/pocketbase';
+	import { client as pb } from '$lib/pocketbase';
 
 	let stats: any = null;
 	let loading = true;

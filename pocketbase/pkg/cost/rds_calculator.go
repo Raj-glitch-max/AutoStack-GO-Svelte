@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
 )
 
 // RDSCostCalculator calculates costs for AWS RDS
@@ -268,11 +268,3 @@ func (rdsc *RDSCostCalculator) EstimateFromBlueprint(blueprintConfig map[string]
 }
 
 // Helper function to get bool from map
-func getBoolOrDefault(m map[string]interface{}, key string, defaultValue bool) bool {
-	if val, ok := m[key]; ok {
-		if b, ok := val.(bool); ok {
-			return b
-		}
-	}
-	return defaultValue
-}

@@ -11,7 +11,7 @@ import (
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase/models"
 	"github.com/pocketbase/pocketbase/tests"
-	"github.com/Raj-glitch-max/autostack/pkg/jobs"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/jobs"
 )
 
 func TestGetPricingStatus(t *testing.T) {

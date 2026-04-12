@@ -125,6 +125,20 @@ func (ps *PricingScheduler) scheduleDefaultJobs() error {
 		return fmt.Errorf("failed to schedule daily pricing fetch: %w", err)
 	}
 	
+	// Daily actual cost fetch at 3 AM UTC (after pricing fetch)
+	dailyActualCostConfig := JobConfig{
+		Name:        "daily-actual-cost-fetch",
+		Schedule:    "0 0 3 * * *", // Every day at 3:00 AM UTC
+		Enabled:     true,
+		Timeout:     30 * time.Minute,
+		MaxRetries:  3,
+		Description: "Fetch actual AWS costs from Cost Explorer for active deployments",
+	}
+	
+	if err := ps.ScheduleJob(dailyActualCostConfig, ps.createActualCostFetchJob()); err != nil {
+		return fmt.Errorf("failed to schedule daily actual cost fetch: %w", err)
+	}
+	
 	// Hourly pricing cache health check
 	healthCheckConfig := JobConfig{
 		Name:        "pricing-cache-health-check",

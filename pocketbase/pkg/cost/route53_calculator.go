@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
 )
 
 // Route53CostCalculator calculates costs for AWS Route53

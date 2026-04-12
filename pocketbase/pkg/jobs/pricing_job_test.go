@@ -51,9 +51,7 @@ func TestPricingScheduler_ScheduleJob(t *testing.T) {
 		Description: "Test job",
 	}
 
-	executed := false
 	jobFunc := func() error {
-		executed = true
 		return nil
 	}
 

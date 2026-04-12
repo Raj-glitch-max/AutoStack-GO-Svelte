@@ -114,85 +114,85 @@
 - [x] Define cost calculation rules for "web-application" blueprint  
   - **Validates**: TR-2.1 (Web App: Fargate vCPU, memory, ALB, RDS, NAT gateway, CloudWatch logs, ECR)
   - **Files**: `pocketbase/pkg/cost/blueprint_web_app.go`
-- [ ] Define cost calculation rules for "full-stack-app" blueprint
+- [x] Define cost calculation rules for "full-stack-app" blueprint
   - **Validates**: TR-2.1 (Full-Stack: All of above + additional services)
   - **Files**: `pocketbase/pkg/cost/blueprint_full_stack.go`
-- [ ] Define cost calculation rules for "microservices" blueprint
+- [x] Define cost calculation rules for "microservices" blueprint
   - **Validates**: TR-2.1 (Include all relevant services for each blueprint)
   - **Files**: `pocketbase/pkg/cost/blueprint_microservices.go`
-- [ ] Implement blueprint-to-calculator mapping system
+- [x] Implement blueprint-to-calculator mapping system
   - **Validates**: TR-2.3 (Use realistic usage assumptions)
   - **Files**: `pocketbase/pkg/cost/blueprint_mapper.go`
-- [ ] Add configurable usage assumptions per blueprint
+- [x] Add configurable usage assumptions per blueprint
   - **Validates**: AC-5.4 (Shows assumptions)
   - **Files**: `pocketbase/pkg/cost/usage_assumptions.go`
-- [ ] Write tests for blueprint cost calculations
+- [x] Write tests for blueprint cost calculations
   - **Validates**: TR-2.2 (Calculate range with 20% margin)
   - **Files**: `pocketbase/pkg/cost/blueprint_test.go`
 
 ### 2.3 Cost Estimation API
-- [ ] Create `POST /api/cost/estimate` endpoint
+- [x] Create `POST /api/cost/estimate` endpoint
   - **Validates**: AC-1.6 (Estimate loads in <500ms from cache)
   - **Files**: `pocketbase/pkg/controller/cost_estimate.go`
-- [ ] Implement request validation for blueprint and region
+- [x] Implement request validation for blueprint and region
   - **Validates**: AC-1.4 (Estimate is region-specific)
   - **Files**: `pocketbase/pkg/validation/cost_request.go`
-- [ ] Add cost range calculation (min: estimate * 0.8, max: estimate * 1.4)
+- [x] Add cost range calculation (min: estimate * 0.8, max: estimate * 1.4)
   - **Validates**: AC-1.1 (System shows cost range not single point estimate)
   - **Files**: `pocketbase/pkg/cost/range_calculator.go`
-- [ ] Implement cost breakdown by service category
+- [x] Implement cost breakdown by service category
   - **Validates**: AC-1.2 (Estimate includes compute, networking, and storage costs)
   - **Files**: `pocketbase/pkg/cost/breakdown_generator.go`
-- [ ] Add usage assumptions and disclaimers to response
+- [x] Add usage assumptions and disclaimers to response
   - **Validates**: AC-1.3 (Estimate clearly labels what is included and excluded)
   - **Files**: `pocketbase/pkg/cost/disclaimer_generator.go`
-- [ ] Implement response caching (1-hour TTL)
+- [x] Implement response caching (1-hour TTL)
   - **Validates**: TR-3.1 (Cost estimate endpoint responds in <500ms)
   - **Files**: `pocketbase/pkg/cache/estimate_cache.go`
-- [ ] Write API integration tests with various blueprints
+- [x] Write API integration tests with various blueprints
   - **Validates**: AC-1.5 (Estimate shows when pricing data was last fetched)
   - **Files**: `pocketbase/pkg/controller/cost_estimate_test.go`
 
 ### 2.4 Frontend Cost Estimator Component
-- [ ] Create `CostEstimator.svelte` component
+- [x] Create `CostEstimator.svelte` component
   - **Validates**: AC-5.1 (Estimate shows itemized breakdown)
   - **Files**: `frontend/src/lib/components/cost/CostEstimator.svelte`
-- [ ] Implement real-time cost updates on blueprint/region change
+- [x] Implement real-time cost updates on blueprint/region change
   - **Validates**: AC-1.6 (Estimate loads in <500ms)
   - **Files**: Component reactive statements
-- [ ] Add loading states and error handling
+- [x] Add loading states and error handling
   - **Validates**: TR-5.1 (Graceful degradation if pricing API unavailable)
   - **Files**: Component error handling logic
-- [ ] Display cost range with clear min/max labeling
+- [x] Display cost range with clear min/max labeling
   - **Validates**: AC-1.1 (System shows cost range not single point estimate)
   - **Files**: Component template and styling
-- [ ] Show itemized cost breakdown by service
+- [x] Show itemized cost breakdown by service
   - **Validates**: AC-5.1 (Estimate shows itemized breakdown)
   - **Files**: Component breakdown display
-- [ ] Display usage assumptions and disclaimers
+- [x] Display usage assumptions and disclaimers
   - **Validates**: AC-5.2 (Disclaimer clearly states excluded costs)
   - **Files**: Component disclaimer section
-- [ ] Add pricing data freshness indicator
+- [x] Add pricing data freshness indicator
   - **Validates**: AC-1.5 (Estimate shows when pricing data was last fetched)
   - **Files**: Component metadata display
-- [ ] Write component tests with mock API responses
+- [x] Write component tests with mock API responses
   - **Validates**: AC-5.3 (Tooltip/help text explains each cost component)
   - **Files**: `frontend/src/lib/components/cost/CostEstimator.test.js`
 
 ## Phase 3: Actual Cost Tracking (Week 3)
 
 ### 3.1 AWS Cost Explorer Integration
-- [ ] Implement `ActualCostFetcher` service with Cost Explorer SDK
-- [ ] Add deployment tagging strategy for cost tracking
-- [ ] Implement cost data fetching with 48-hour delay handling
-- [ ] Add cost breakdown by AWS service
-- [ ] Implement monthly cost projection from partial data
-- [ ] Add variance calculation (actual vs estimate)
-- [ ] Write integration tests with Cost Explorer API mocks
+- [x] Implement `ActualCostFetcher` service with Cost Explorer SDK
+- [x] Add deployment tagging strategy for cost tracking
+- [x] Implement cost data fetching with 48-hour delay handling
+- [x] Add cost breakdown by AWS service
+- [x] Implement monthly cost projection from partial data
+- [x] Add variance calculation (actual vs estimate)
+- [x] Write integration tests with Cost Explorer API mocks
 
 ### 3.2 Cost Tracking Background Jobs
-- [ ] Create daily job to fetch actual costs for active deployments
-- [ ] Implement incremental cost updates (only fetch new data)
+- [x] Create daily job to fetch actual costs for active deployments
+- [-] Implement incremental cost updates (only fetch new data)
 - [ ] Add job to clean up cost data for destroyed deployments
 - [ ] Implement error handling for Cost Explorer API failures
 - [ ] Add monitoring for cost data freshness
@@ -350,7 +350,7 @@
 - [x] **Property 2**: Cost ranges have min ≤ estimate ≤ max
   - **Validates**: Cost Calculation Property 2
   - **Files**: `pocketbase/pkg/cost/range_properties_test.go`
-- [ ] **Property 3**: Regional pricing variations are consistent
+- [x] **Property 3**: Regional pricing variations are consistent
   - **Validates**: Cost Calculation Property 3
   - **Files**: `pocketbase/pkg/cost/regional_properties_test.go`
 - [ ] **Property 4**: Blueprint cost calculations are deterministic

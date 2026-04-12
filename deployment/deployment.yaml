@@ -22,9 +22,13 @@ spec:
         volumeMounts:
           - name: one-click-data
             mountPath: /app/one-click/pb_data
+          - name: terraform-workdir
+            mountPath: /app/terraform-workdir
         envFrom:
         - configMapRef:
             name: one-click-config
+        - secretRef:
+            name: autostack-secrets
         resources:
           requests:
             memory: "128Mi"
@@ -33,3 +37,6 @@ spec:
         - name: one-click-data
           persistentVolumeClaim:
             claimName: one-click-data
+        - name: terraform-workdir
+          persistentVolumeClaim:
+            claimName: terraform-workdir

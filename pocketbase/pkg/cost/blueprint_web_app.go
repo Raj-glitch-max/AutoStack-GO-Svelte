@@ -104,8 +104,8 @@ func (wac *WebAppBlueprintCalculator) Calculate(config WebAppConfig) (*WebAppCos
 
 	// Calculate ALB costs
 	albConfig := ALBConfig{
-		LCUHours: config.LCUHours,
-		Region:   config.Region,
+		HoursPerMonth: 730,
+		Region:        config.Region,
 	}
 	albBreakdown, err := wac.albCalc.Calculate(albConfig)
 	if err != nil {
@@ -114,13 +114,13 @@ func (wac *WebAppBlueprintCalculator) Calculate(config WebAppConfig) (*WebAppCos
 
 	// Calculate RDS costs
 	rdsConfig := RDSConfig{
-		InstanceClass:    config.DBInstanceClass,
-		Engine:           config.DBEngine,
-		StorageGB:        config.DBStorageGB,
-		IOPS:             0, // General Purpose SSD
-		BackupStorageGB:  config.DBStorageGB, // Assume same as storage
-		MultiAZ:          false,
-		Region:           config.Region,
+		InstanceClass:   config.DBInstanceClass,
+		Engine:          config.DBEngine,
+		StorageGB:       float64(config.DBStorageGB),
+		IOPS:            0,
+		BackupStorageGB: float64(config.DBStorageGB),
+		MultiAZ:         false,
+		Region:          config.Region,
 	}
 	rdsBreakdown, err := wac.rdsCalc.Calculate(rdsConfig)
 	if err != nil {
@@ -281,12 +281,3 @@ func (wac *WebAppBlueprintCalculator) GetDisclaimer() string {
 		"AWS Secrets Manager for credentials, VPC endpoints, and any third-party integrations."
 }
 
-// Helper function to get string from map
-func getStringOrDefault(m map[string]interface{}, key string, defaultValue string) string {
-	if val, ok := m[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
-		}
-	}
-	return defaultValue
-}

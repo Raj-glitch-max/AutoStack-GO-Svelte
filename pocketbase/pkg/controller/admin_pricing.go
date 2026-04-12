@@ -7,8 +7,8 @@ import (
 
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
-	"github.com/Raj-glitch-max/autostack/pkg/jobs"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/jobs"
 )
 
 // AdminPricingController handles admin pricing management endpoints

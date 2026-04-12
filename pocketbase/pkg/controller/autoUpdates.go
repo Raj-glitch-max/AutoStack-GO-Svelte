@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Raj-glitch-max/autostack/pkg/image"
-	"github.com/Raj-glitch-max/autostack/pkg/k8s"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/image"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/k8s"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/models"

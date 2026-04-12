@@ -5,7 +5,7 @@ import (
 	"log"
 
 	"github.com/gorilla/websocket"
-	"github.com/Raj-glitch-max/autostack/pkg/k8s"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/k8s"
 	"github.com/labstack/echo/v5"
 )
 

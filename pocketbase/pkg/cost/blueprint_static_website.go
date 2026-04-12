@@ -61,10 +61,11 @@ func (swc *StaticWebsiteBlueprintCalculator) Calculate(config StaticWebsiteConfi
 
 	// Calculate S3 costs
 	s3Config := S3Config{
-		StorageGB:        config.StorageGB,
-		RequestsPerMonth: config.RequestsPerMonth,
-		DataTransferGB:   0, // CloudFront handles data transfer
-		Region:           config.Region,
+		StorageGB:         config.StorageGB,
+		PUTRequests:       config.RequestsPerMonth / 10,
+		GETRequests:       config.RequestsPerMonth,
+		DataTransferOutGB: 0,
+		Region:            config.Region,
 	}
 	s3Breakdown, err := swc.s3Calculator.Calculate(s3Config)
 	if err != nil {
@@ -73,9 +74,9 @@ func (swc *StaticWebsiteBlueprintCalculator) Calculate(config StaticWebsiteConfi
 
 	// Calculate CloudFront costs
 	cloudfrontConfig := CloudFrontConfig{
-		DataTransferGB:   config.DataTransferGB,
-		RequestsPerMonth: config.RequestsPerMonth,
-		Region:           config.Region,
+		DataTransferOutGB: config.DataTransferGB,
+		HTTPSRequests:     config.RequestsPerMonth,
+		Region:            config.Region,
 	}
 	cloudfrontBreakdown, err := swc.cloudfrontCalc.Calculate(cloudfrontConfig)
 	if err != nil {
@@ -86,10 +87,10 @@ func (swc *StaticWebsiteBlueprintCalculator) Calculate(config StaticWebsiteConfi
 	route53Cost := 0.0
 	if config.HasCustomDomain {
 		route53Config := Route53Config{
-			HostedZones:      1,
-			QueriesPerMonth:  config.RequestsPerMonth,
-			HealthChecks:     0,
-			Region:           config.Region,
+			HostedZones:     1,
+			StandardQueries: config.RequestsPerMonth,
+			HealthChecks:    0,
+			Region:          config.Region,
 		}
 		route53Breakdown, err := swc.route53Calc.Calculate(route53Config)
 		if err != nil {
@@ -119,7 +120,7 @@ func (swc *StaticWebsiteBlueprintCalculator) Calculate(config StaticWebsiteConfi
 
 	return &StaticWebsiteCostBreakdown{
 		S3Storage:      s3Breakdown.StorageCost,
-		S3Requests:     s3Breakdown.RequestCost,
+		S3Requests:     s3Breakdown.PUTRequestCost + s3Breakdown.GETRequestCost,
 		CloudFront:     cloudfrontBreakdown.TotalMonthly,
 		Route53:        route53Cost,
 		TotalMonthly:   roundToTwoDecimals(totalMonthly),
@@ -177,15 +178,3 @@ func (swc *StaticWebsiteBlueprintCalculator) GetDisclaimer() string {
 		"Lambda@Edge functions, and CloudFront invalidation requests."
 }
 
-// Helper function to get bool from map
-func getBoolOrDefault(m map[string]interface{}, key string, defaultValue bool) bool {
-	if val, ok := m[key]; ok {
-		switch v := val.(type) {
-		case bool:
-			return v
-		case string:
-			return v == "true" || v == "yes" || v == "1"
-		}
-	}
-	return defaultValue
-}

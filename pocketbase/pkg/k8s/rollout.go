@@ -8,7 +8,7 @@ import (
 	"net/http"
 
 	yaml2 "github.com/ghodss/yaml"
-	"github.com/Raj-glitch-max/autostack/pkg/models"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/models"
 	pb_models "github.com/pocketbase/pocketbase/models"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

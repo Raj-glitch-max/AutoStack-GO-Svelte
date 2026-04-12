@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
 )
 
 // createPricingFetchJob creates the daily pricing fetch job function
@@ -45,6 +45,39 @@ func (ps *PricingScheduler) createPricingFetchJob() func() error {
 		
 		// Update job completion metrics
 		if err := ps.recordJobCompletion("daily-pricing-fetch", duration, err); err != nil {
+			log.Printf("Failed to record job completion: %v", err)
+		}
+		
+		return nil
+	}
+}
+
+// createActualCostFetchJob creates the daily actual cost fetch job
+func (ps *PricingScheduler) createActualCostFetchJob() func() error {
+	return func() error {
+		log.Println("Starting actual cost fetch job for active deployments...")
+		
+		// Create actual cost fetcher
+		fetcher, err := aws.NewActualCostFetcher(ps.app)
+		if err != nil {
+			return fmt.Errorf("failed to create actual cost fetcher: %w", err)
+		}
+		
+		// Record job start time
+		startTime := time.Now()
+		
+		// Fetch actual costs for all active deployments
+		err = fetcher.FetchActualCostsForActiveDeployments()
+		if err != nil {
+			// Log error but don't fail completely - partial data is better than none
+			log.Printf("Actual cost fetch completed with errors: %v", err)
+		}
+		
+		duration := time.Since(startTime)
+		log.Printf("Actual cost fetch job completed in %v", duration)
+		
+		// Update job completion metrics
+		if err := ps.recordJobCompletion("daily-actual-cost-fetch", duration, err); err != nil {
 			log.Printf("Failed to record job completion: %v", err)
 		}
 		
@@ -256,6 +289,11 @@ func (pjm *PricingJobManager) Stop() error {
 // TriggerPricingFetch manually triggers a pricing fetch
 func (pjm *PricingJobManager) TriggerPricingFetch() error {
 	return pjm.scheduler.TriggerJob("daily-pricing-fetch")
+}
+
+// TriggerActualCostFetch manually triggers an actual cost fetch
+func (pjm *PricingJobManager) TriggerActualCostFetch() error {
+	return pjm.scheduler.TriggerJob("daily-actual-cost-fetch")
 }
 
 // GetJobStatus returns the status of all pricing jobs

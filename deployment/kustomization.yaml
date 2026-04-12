@@ -11,3 +11,5 @@ resources:
 - clusterrolebinding.yaml
 - configmap.yaml
 - pvc.yaml
+- pvc-terraform.yaml
+- secret.yaml

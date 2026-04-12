@@ -14,10 +14,15 @@ import (
 	"github.com/pocketbase/pocketbase/models"
 )
 
+// PricingClientInterface defines the interface for AWS Pricing client
+type PricingClientInterface interface {
+	GetProducts(ctx context.Context, params *pricing.GetProductsInput, optFns ...func(*pricing.Options)) (*pricing.GetProductsOutput, error)
+}
+
 // PricingFetcher handles fetching AWS pricing data
 type PricingFetcher struct {
 	app       core.App
-	client    *pricing.Client
+	client    PricingClientInterface
 	regions   []string
 	batchSize int
 }

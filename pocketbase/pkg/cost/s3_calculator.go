@@ -4,7 +4,7 @@ import (
 	"fmt"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
 )
 
 // S3CostCalculator calculates costs for AWS S3
@@ -262,12 +262,3 @@ func (s3c *S3CostCalculator) EstimateFromBlueprint(blueprintConfig map[string]in
 	return s3c.CalculateWithRange(config)
 }
 
-// Helper function to get string from map
-func getStringOrDefault(m map[string]interface{}, key string, defaultValue string) string {
-	if val, ok := m[key]; ok {
-		if str, ok := val.(string); ok {
-			return str
-		}
-	}
-	return defaultValue
-}

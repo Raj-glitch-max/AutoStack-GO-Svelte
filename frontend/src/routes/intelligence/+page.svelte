@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import RecoveryDashboard from '$lib/components/intelligence/RecoveryDashboard.svelte';
-	import { pb } from '$lib/pocketbase';
+	import { client as pb } from '$lib/pocketbase';
 	import { goto } from '$app/navigation';
 
 	let loading = true;

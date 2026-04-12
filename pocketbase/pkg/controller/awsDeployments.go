@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
-	"github.com/Raj-glitch-max/autostack/pkg/terraform"
-	"github.com/Raj-glitch-max/autostack/pkg/util"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/terraform"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/util"
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"

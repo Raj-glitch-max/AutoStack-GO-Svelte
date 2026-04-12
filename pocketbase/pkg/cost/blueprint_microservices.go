@@ -145,8 +145,8 @@ func (msc *MicroservicesBlueprintCalculator) Calculate(config MicroservicesConfi
 
 	// Calculate ALB costs
 	albConfig := ALBConfig{
-		LCUHours: config.LCUHours,
-		Region:   config.Region,
+		HoursPerMonth: 730,
+		Region:        config.Region,
 	}
 	albBreakdown, err := msc.albCalc.Calculate(albConfig)
 	if err != nil {
@@ -155,13 +155,13 @@ func (msc *MicroservicesBlueprintCalculator) Calculate(config MicroservicesConfi
 
 	// Calculate RDS costs
 	rdsConfig := RDSConfig{
-		InstanceClass:    config.DBInstanceClass,
-		Engine:           config.DBEngine,
-		StorageGB:        config.DBStorageGB,
-		IOPS:             0,
-		BackupStorageGB:  config.DBStorageGB,
-		MultiAZ:          false,
-		Region:           config.Region,
+		InstanceClass:   config.DBInstanceClass,
+		Engine:          config.DBEngine,
+		StorageGB:       float64(config.DBStorageGB),
+		IOPS:            0,
+		BackupStorageGB: float64(config.DBStorageGB),
+		MultiAZ:         false,
+		Region:          config.Region,
 	}
 	rdsBreakdown, err := msc.rdsCalc.Calculate(rdsConfig)
 	if err != nil {
@@ -170,10 +170,11 @@ func (msc *MicroservicesBlueprintCalculator) Calculate(config MicroservicesConfi
 
 	// Calculate S3 costs
 	s3Config := S3Config{
-		StorageGB:        config.StorageGB,
-		RequestsPerMonth: config.RequestsPerMonth,
-		DataTransferGB:   0, // CloudFront handles data transfer
-		Region:           config.Region,
+		StorageGB:         config.StorageGB,
+		PUTRequests:       config.RequestsPerMonth / 10,
+		GETRequests:       config.RequestsPerMonth,
+		DataTransferOutGB: 0,
+		Region:            config.Region,
 	}
 	s3Breakdown, err := msc.s3Calc.Calculate(s3Config)
 	if err != nil {
@@ -182,9 +183,9 @@ func (msc *MicroservicesBlueprintCalculator) Calculate(config MicroservicesConfi
 
 	// Calculate CloudFront costs
 	cloudfrontConfig := CloudFrontConfig{
-		DataTransferGB:   config.DataTransferGB,
-		RequestsPerMonth: config.RequestsPerMonth,
-		Region:           config.Region,
+		DataTransferOutGB: config.DataTransferGB,
+		HTTPSRequests:     config.RequestsPerMonth,
+		Region:            config.Region,
 	}
 	cloudfrontBreakdown, err := msc.cloudfrontCalc.Calculate(cloudfrontConfig)
 	if err != nil {

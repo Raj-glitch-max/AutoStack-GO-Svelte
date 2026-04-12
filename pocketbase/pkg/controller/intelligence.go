@@ -9,7 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/models"
-	"github.com/Raj-glitch-max/autostack/pkg/intelligence"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/intelligence"
 )
 
 // RegisterIntelligenceRoutes registers intelligence and error analysis routes

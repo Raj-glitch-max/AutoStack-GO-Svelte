@@ -2,10 +2,9 @@ package cost
 
 import (
 	"fmt"
-	"math"
 
 	"github.com/pocketbase/pocketbase/core"
-	"github.com/Raj-glitch-max/autostack/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
 )
 
 // FargateCostCalculator calculates costs for AWS Fargate
@@ -272,39 +271,4 @@ func (fcc *FargateCostCalculator) EstimateFromBlueprint(blueprintConfig map[stri
 	}
 
 	return fcc.CalculateWithRange(config)
-}
-
-// Helper function to round to 2 decimal places
-func roundToTwoDecimals(value float64) float64 {
-	return math.Round(value*100) / 100
-}
-
-// Helper functions for blueprint parsing
-func getFloat64OrDefault(m map[string]interface{}, key string, defaultValue float64) float64 {
-	if val, ok := m[key]; ok {
-		switch v := val.(type) {
-		case float64:
-			return v
-		case int:
-			return float64(v)
-		case string:
-			// Try to parse string as float
-			var f float64
-			fmt.Sscanf(v, "%f", &f)
-			return f
-		}
-	}
-	return defaultValue
-}
-
-func getIntOrDefault(m map[string]interface{}, key string, defaultValue int) int {
-	if val, ok := m[key]; ok {
-		switch v := val.(type) {
-		case int:
-			return v
-		case float64:
-			return int(v)
-		}
-	}
-	return defaultValue
 }

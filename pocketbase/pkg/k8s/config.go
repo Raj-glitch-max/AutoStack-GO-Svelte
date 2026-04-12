@@ -5,7 +5,7 @@ import (
 	"flag"
 	"log"
 
-	"github.com/Raj-glitch-max/autostack/pkg/env"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/env"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
