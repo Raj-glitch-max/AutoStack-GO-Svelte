@@ -167,6 +167,34 @@ func (ps *PricingScheduler) scheduleDefaultJobs() error {
 		return fmt.Errorf("failed to schedule cleanup job: %w", err)
 	}
 	
+	// Daily cost data cleanup for destroyed deployments
+	costCleanupConfig := JobConfig{
+		Name:        "daily-cost-cleanup",
+		Schedule:    "0 0 4 * * *", // Every day at 4:00 AM UTC (after actual cost fetch)
+		Enabled:     true,
+		Timeout:     15 * time.Minute,
+		MaxRetries:  2,
+		Description: "Clean up cost data for destroyed and failed deployments",
+	}
+	
+	if err := ps.ScheduleJob(costCleanupConfig, ps.createCostCleanupJob()); err != nil {
+		return fmt.Errorf("failed to schedule cost cleanup job: %w", err)
+	}
+	
+	// Cost data freshness monitoring (every 6 hours)
+	costFreshnessConfig := JobConfig{
+		Name:        "cost-freshness-monitor",
+		Schedule:    "0 0 */6 * * *", // Every 6 hours
+		Enabled:     true,
+		Timeout:     10 * time.Minute,
+		MaxRetries:  2,
+		Description: "Monitor cost data freshness and alert on stale data",
+	}
+	
+	if err := ps.ScheduleJob(costFreshnessConfig, ps.createCostFreshnessMonitorJob()); err != nil {
+		return fmt.Errorf("failed to schedule cost freshness monitor: %w", err)
+	}
+	
 	return nil
 }
 

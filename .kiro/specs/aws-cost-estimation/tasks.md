@@ -193,27 +193,27 @@
 ### 3.2 Cost Tracking Background Jobs
 - [x] Create daily job to fetch actual costs for active deployments
 - [-] Implement incremental cost updates (only fetch new data)
-- [ ] Add job to clean up cost data for destroyed deployments
-- [ ] Implement error handling for Cost Explorer API failures
-- [ ] Add monitoring for cost data freshness
-- [ ] Write tests for cost tracking job execution
+- [x] Add job to clean up cost data for destroyed deployments
+- [x] Implement error handling for Cost Explorer API failures
+- [x] Add monitoring for cost data freshness
+- [x] Write tests for cost tracking job execution
 
 ### 3.3 Actual Cost API
-- [ ] Create `GET /api/cost/actual/{deploymentId}` endpoint
-- [ ] Implement user authorization (deployment ownership)
-- [ ] Add cost-to-date and projected monthly calculations
-- [ ] Implement variance analysis with percentage calculation
-- [ ] Add service-level cost breakdown in response
-- [ ] Implement response caching (6-hour TTL)
-- [ ] Write API tests for actual cost retrieval
+- [x] Create `GET /api/cost/actual/{deploymentId}` endpoint
+- [x] Implement user authorization (deployment ownership)
+- [x] Add cost-to-date and projected monthly calculations
+- [x] Implement variance analysis with percentage calculation
+- [x] Add service-level cost breakdown in response
+- [x] Implement response caching (6-hour TTL)
+- [x] Write API tests for actual cost retrieval
 
 ### 3.4 Frontend Actual Cost Component
-- [ ] Create `ActualCostDisplay.svelte` component
-- [ ] Implement cost comparison (actual vs estimate)
-- [ ] Add variance display with color coding (green/orange/red)
-- [ ] Show service-level cost breakdown
-- [ ] Handle 48-hour delay with appropriate messaging
-- [ ] Add automatic refresh for cost updates
+- [x] Create `ActualCostDisplay.svelte` component
+- [x] Implement cost comparison (actual vs estimate)
+- [x] Add variance display with color coding (green/orange/red)
+- [x] Show service-level cost breakdown
+- [x] Handle 48-hour delay with appropriate messaging
+- [x] Add automatic refresh for cost updates
 - [ ] Write component tests for various cost scenarios
 
 ## Phase 4: Anomaly Detection & Alerting (Week 4)

@@ -98,6 +98,7 @@ func TestCalculateProjectedMonthlyCost(t *testing.T) {
 }
 
 // TestCalculateVariance tests variance calculation
+// Validates: AC-3.4 (Compares actual vs estimated with variance percentage)
 func TestCalculateVariance(t *testing.T) {
 	acf := &ActualCostFetcher{}
 
@@ -149,6 +150,62 @@ func TestCalculateVariance(t *testing.T) {
 			estimate:    0.00,
 			expected:    0.00,
 			description: "Should handle both zero",
+		},
+		{
+			name:        "Very large variance (200%)",
+			actual:      300.00,
+			estimate:    100.00,
+			expected:    200.00,
+			description: "Should handle large variance correctly",
+		},
+		{
+			name:        "Very small variance (0.5%)",
+			actual:      100.50,
+			estimate:    100.00,
+			expected:    0.50,
+			description: "Should handle small variance with precision",
+		},
+		{
+			name:        "Negative actual cost (credits)",
+			actual:      -10.00,
+			estimate:    100.00,
+			expected:    -110.00,
+			description: "Should handle negative actual costs (credits/refunds)",
+		},
+		{
+			name:        "Very small estimate",
+			actual:      1.00,
+			estimate:    0.50,
+			expected:    100.00,
+			description: "Should handle very small estimate values",
+		},
+		{
+			name:        "Actual 9.76% higher (from design example)",
+			actual:      62.18,
+			estimate:    56.65,
+			expected:    9.76,
+			description: "Should match design document example variance",
+		},
+		{
+			name:        "Rounding edge case",
+			actual:      62.185,
+			estimate:    56.65,
+			expected:    9.77,
+			description: "Should round variance to 2 decimal places correctly",
+		},
+		{
+			name:        "Actual 100% higher (doubled)",
+			actual:      200.00,
+			estimate:    100.00,
+			expected:    100.00,
+			description: "Should handle 100% variance (doubled cost)",
+		},
+		{
+			name:        "Actual 90% lower (near zero)",
+			actual:      10.00,
+			estimate:    100.00,
+			expected:    -90.00,
+			description: "Should handle large negative variance",
 		},
 	}
 

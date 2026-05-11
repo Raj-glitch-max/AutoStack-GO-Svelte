@@ -1,4 +1,4 @@
-import type { CostEstimateResponse } from "$lib/types/cost";
+import type { CostEstimateResponse, ActualCostResponse, ActualCostDelayResponse } from "$lib/types/cost";
 
 async function fetchFromAPI<T>(endpoint: string, options?: RequestInit): Promise<T | undefined> {
     let data: T | undefined;
@@ -57,4 +57,11 @@ export async function getCostEstimate(
     }
     
     return fetchFromAPI<CostEstimateResponse>(endpoint);
+}
+
+export async function getActualCost(
+    deploymentId: string
+): Promise<ActualCostResponse | ActualCostDelayResponse | undefined> {
+    const endpoint = `actual/${deploymentId}`;
+    return fetchFromAPI<ActualCostResponse | ActualCostDelayResponse>(endpoint);
 }

@@ -83,6 +83,13 @@ WEEK*_*.md
 AI_INTELLIGENCE_*.md
 AWS_COST_ESTIMATION_PHASE*.md
 DEMO_SCRIPT.md
+PRESENTATION_*.md
+COLLEGE_*.md
+METRICS_*.md
+MINI_PROJECTS_*.md
+
+# PDF files
+*.pdf
 
 # Side projects
 side projects/

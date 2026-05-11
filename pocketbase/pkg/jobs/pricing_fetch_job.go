@@ -296,6 +296,11 @@ func (pjm *PricingJobManager) TriggerActualCostFetch() error {
 	return pjm.scheduler.TriggerJob("daily-actual-cost-fetch")
 }
 
+// TriggerCostCleanup manually triggers a cost data cleanup
+func (pjm *PricingJobManager) TriggerCostCleanup() error {
+	return pjm.scheduler.TriggerJob("daily-cost-cleanup")
+}
+
 // GetJobStatus returns the status of all pricing jobs
 func (pjm *PricingJobManager) GetJobStatus() []JobStatus {
 	return pjm.scheduler.GetJobStatus()
@@ -325,4 +330,24 @@ func (pjm *PricingJobManager) IsHealthy() (bool, []string) {
 	}
 	
 	return len(issues) == 0, issues
+}
+
+// GetCostDataFreshnessStatus returns the current cost data freshness status
+func (pjm *PricingJobManager) GetCostDataFreshnessStatus() (*CostFreshnessMetrics, error) {
+	return pjm.scheduler.GetCostDataFreshnessStatus()
+}
+
+// GetStaleDeployments returns a list of deployments with stale cost data
+func (pjm *PricingJobManager) GetStaleDeployments() ([]StaleDeploymentInfo, error) {
+	return pjm.scheduler.GetStaleDeployments()
+}
+
+// IsCostDataFresh checks if cost data is fresh for a specific deployment
+func (pjm *PricingJobManager) IsCostDataFresh(deploymentID string) (bool, time.Duration, error) {
+	return pjm.scheduler.IsCostDataFresh(deploymentID)
+}
+
+// TriggerCostFreshnessMonitor manually triggers the cost freshness monitoring job
+func (pjm *PricingJobManager) TriggerCostFreshnessMonitor() error {
+	return pjm.scheduler.TriggerJob("cost-freshness-monitor")
 }

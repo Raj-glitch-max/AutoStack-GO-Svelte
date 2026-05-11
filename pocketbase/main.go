@@ -73,6 +73,13 @@ func main() {
 		log.Println("[WARNING] INFRACOST_API_KEY not set - cost estimation will be unavailable")
 	}
 	infracostService := aws.NewInfracostService(infracostAPIKey)
+	
+	// Initialize cost controllers
+	costEstimateController := controller.NewCostEstimateController(app)
+	actualCostController, err := controller.NewActualCostController(app)
+	if err != nil {
+		log.Printf("[WARNING] Failed to initialize actual cost controller: %v", err)
+	}
 
 	// load js files to allow loading external JavaScript migrations
 	jsvm.MustRegister(app, jsvm.Config{
@@ -221,6 +228,14 @@ func main() {
 
 		// AI Intelligence Routes
 		controller.RegisterIntelligenceRoutes(app, e.Router)
+		
+		// Cost Estimation Routes
+		costEstimateController.RegisterCostEstimateRoutes(e.Router)
+		
+		// Actual Cost Routes
+		if actualCostController != nil {
+			actualCostController.RegisterActualCostRoutes(e.Router)
+		}
 
 		// AWS Credentials Routes
 		e.Router.POST("/api/aws/credentials", func(c echo.Context) error {

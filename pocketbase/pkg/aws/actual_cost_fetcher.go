@@ -32,9 +32,11 @@ type CostExplorerClientInterface interface {
 
 // ActualCostFetcher handles fetching actual AWS costs from Cost Explorer API
 type ActualCostFetcher struct {
-	app    core.App
-	client CostExplorerClientInterface
-	retry  *RetryManager
+	app            core.App
+	client         CostExplorerClientInterface
+	retry          *RetryManager
+	circuitBreaker *CircuitBreaker
+	errorStats     *ErrorStats
 }
 
 // ActualCostData represents actual cost data from AWS Cost Explorer
@@ -64,11 +66,15 @@ func NewActualCostFetcher(app core.App) (*ActualCostFetcher, error) {
 
 	client := costexplorer.NewFromConfig(cfg)
 	retryManager := NewRetryManager(DefaultRetryConfig())
+	circuitBreaker := NewCircuitBreaker(DefaultCircuitBreakerConfig())
+	errorStats := NewErrorStats()
 
 	return &ActualCostFetcher{
-		app:    app,
-		client: client,
-		retry:  retryManager,
+		app:            app,
+		client:         client,
+		retry:          retryManager,
+		circuitBreaker: circuitBreaker,
+		errorStats:     errorStats,
 	}, nil
 }
 
@@ -165,6 +171,8 @@ func (acf *ActualCostFetcher) fetchCostExplorerData(deploymentID string, period 
 	startDate := period.Start.Format("2006-01-02")
 	endDate := period.End.Format("2006-01-02")
 
+	log.Printf("Fetching Cost Explorer data for deployment %s (period: %s to %s)", deploymentID, startDate, endDate)
+
 	input := &costexplorer.GetCostAndUsageInput{
 		TimePeriod: &types.DateInterval{
 			Start: aws.String(startDate),
@@ -186,18 +194,58 @@ func (acf *ActualCostFetcher) fetchCostExplorerData(deploymentID string, period 
 		},
 	}
 
-	// Execute with retry logic
+	// Execute with circuit breaker and retry logic
 	var result *costexplorer.GetCostAndUsageOutput
-	var err error
+	var lastErr error
 
-	operation := func() error {
-		result, err = acf.client.GetCostAndUsage(ctx, input)
-		return err
+	// Wrap the operation with circuit breaker
+	circuitBreakerErr := acf.circuitBreaker.Execute(ctx, func() error {
+		// Execute with retry logic
+		operation := func() error {
+			var err error
+			result, err = acf.client.GetCostAndUsage(ctx, input)
+			
+			// Classify and record the error
+			if err != nil {
+				ceErr := ClassifyCostExplorerError(err, deploymentID)
+				acf.errorStats.RecordError(ceErr)
+				
+				log.Printf("Cost Explorer API error for deployment %s: [%s] %s", 
+					deploymentID, ceErr.Type, ceErr.Message)
+				
+				// Only retry if error is retryable
+				if !ceErr.Retryable {
+					log.Printf("Non-retryable error for deployment %s, aborting: %v", deploymentID, err)
+					return err
+				}
+				
+				lastErr = err
+				return err
+			}
+			
+			return nil
+		}
+
+		return acf.retry.ExecuteWithRetry(ctx, operation, fmt.Sprintf("fetchCostExplorer-%s", deploymentID))
+	}, fmt.Sprintf("CostExplorer-%s", deploymentID))
+
+	// Handle circuit breaker errors
+	if circuitBreakerErr != nil {
+		if IsCircuitBreakerOpen(circuitBreakerErr) {
+			log.Printf("Circuit breaker is open for deployment %s, skipping Cost Explorer API call", deploymentID)
+			return nil, fmt.Errorf("cost explorer service temporarily unavailable (circuit breaker open): %w", circuitBreakerErr)
+		}
+		
+		// Return the last error from retry attempts
+		if lastErr != nil {
+			ceErr := ClassifyCostExplorerError(lastErr, deploymentID)
+			return nil, fmt.Errorf("failed to fetch cost data after retries: [%s] %s: %w", ceErr.Type, ceErr.Message, lastErr)
+		}
+		
+		return nil, fmt.Errorf("failed to get cost and usage: %w", circuitBreakerErr)
 	}
 
-	if err := acf.retry.ExecuteWithRetry(ctx, operation, fmt.Sprintf("fetchCostExplorer-%s", deploymentID)); err != nil {
-		return nil, fmt.Errorf("failed to get cost and usage: %w", err)
-	}
+	log.Printf("Successfully fetched Cost Explorer data for deployment %s", deploymentID)
 
 	// Process results
 	return acf.processCostExplorerResults(result)
@@ -518,4 +566,53 @@ func roundBreakdownToTwoDecimals(breakdown map[string]float64) map[string]float6
 		rounded[key] = roundToTwoDecimals(value)
 	}
 	return rounded
+}
+
+// GetErrorStats returns error statistics for this fetcher
+func (acf *ActualCostFetcher) GetErrorStats() *ErrorStats {
+	return acf.errorStats
+}
+
+// GetCircuitBreakerStats returns circuit breaker statistics
+func (acf *ActualCostFetcher) GetCircuitBreakerStats() CircuitBreakerStats {
+	return acf.circuitBreaker.GetStats()
+}
+
+// ResetCircuitBreaker manually resets the circuit breaker
+func (acf *ActualCostFetcher) ResetCircuitBreaker() {
+	log.Printf("Manually resetting Cost Explorer circuit breaker")
+	acf.circuitBreaker.Reset()
+}
+
+// IsHealthy checks if the fetcher is healthy (circuit breaker closed, low error rate)
+func (acf *ActualCostFetcher) IsHealthy() bool {
+	cbStats := acf.circuitBreaker.GetStats()
+	
+	// Circuit breaker must be closed
+	if cbStats.State != StateClosed {
+		return false
+	}
+	
+	// Error rate must be below threshold (e.g., 20%)
+	if cbStats.FailureRate > 0.2 {
+		return false
+	}
+	
+	return true
+}
+
+// GetHealthStatus returns a detailed health status
+func (acf *ActualCostFetcher) GetHealthStatus() map[string]interface{} {
+	cbStats := acf.circuitBreaker.GetStats()
+	
+	return map[string]interface{}{
+		"healthy":              acf.IsHealthy(),
+		"circuitBreakerState":  string(cbStats.State),
+		"failureRate":          cbStats.FailureRate,
+		"totalRequests":        cbStats.Requests,
+		"failures":             cbStats.Failures,
+		"successes":            cbStats.Successes,
+		"lastFailTime":         cbStats.LastFailTime,
+		"errorStats":           acf.errorStats,
+	}
 }
