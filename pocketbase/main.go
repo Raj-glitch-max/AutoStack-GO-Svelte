@@ -236,6 +236,9 @@ func main() {
 		if actualCostController != nil {
 			actualCostController.RegisterActualCostRoutes(e.Router)
 		}
+		
+		// Cost Threshold Routes
+		controller.RegisterCostThresholdRoutes(app, e.Router)
 
 		// AWS Credentials Routes
 		e.Router.POST("/api/aws/credentials", func(c echo.Context) error {

@@ -351,3 +351,8 @@ func (pjm *PricingJobManager) IsCostDataFresh(deploymentID string) (bool, time.D
 func (pjm *PricingJobManager) TriggerCostFreshnessMonitor() error {
 	return pjm.scheduler.TriggerJob("cost-freshness-monitor")
 }
+
+// TriggerCostAnomalyDetection manually triggers the cost anomaly detection job
+func (pjm *PricingJobManager) TriggerCostAnomalyDetection() error {
+	return pjm.scheduler.TriggerJob("daily-cost-anomaly-detection")
+}

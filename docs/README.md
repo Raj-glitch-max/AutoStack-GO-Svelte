@@ -28,10 +28,7 @@ docs/
 ├── PROJECT_STRUCTURE.md         # Project organization
 ├── PROJECT_STATUS.md            # Current project status
 ├── API_INTEGRATIONS.md          # External API guide (Infracost, Resend)
-├── IMPLEMENTATION_SUMMARY.md    # Implementation summary
-├── VERIFICATION_CHECKLIST.md    # Production readiness checklist
-├── CLEANUP_SUMMARY.md           # Documentation cleanup log
-├── PROJECT_STATUS_VERIFICATION.md  # Feature verification
+├── COST_MONITOR_IMPLEMENTATION.md  # Cost monitoring feature
 ├── api/
 │   └── API.md                  # REST API reference
 ├── internal/                    # Internal technical docs
@@ -49,8 +46,8 @@ docs/
 │   ├── CACHE_IMPLEMENTATION.md
 │   ├── IMPLEMENTATION_SUMMARY.md
 │   └── CostEstimator_README.md
-└── archive/                     # Historical documentation
-    └── (35 archived files)
+├── blueprints/                  # Blueprint templates
+└── assets/                      # Documentation assets
 ```
 
 ## Documentation by Role

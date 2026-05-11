@@ -195,6 +195,20 @@ func (ps *PricingScheduler) scheduleDefaultJobs() error {
 		return fmt.Errorf("failed to schedule cost freshness monitor: %w", err)
 	}
 	
+	// Daily cost anomaly detection (after actual cost fetch)
+	costAnomalyConfig := JobConfig{
+		Name:        "daily-cost-anomaly-detection",
+		Schedule:    "0 30 3 * * *", // Every day at 3:30 AM UTC (30 minutes after actual cost fetch)
+		Enabled:     true,
+		Timeout:     20 * time.Minute,
+		MaxRetries:  2,
+		Description: "Check active deployments for cost anomalies and send alerts",
+	}
+	
+	if err := ps.ScheduleJob(costAnomalyConfig, ps.createCostAnomalyDetectionJob()); err != nil {
+		return fmt.Errorf("failed to schedule cost anomaly detection: %w", err)
+	}
+	
 	return nil
 }
 
