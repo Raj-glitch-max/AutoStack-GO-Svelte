@@ -3,8 +3,11 @@
 **Smart Cloud Deployment Platform with AI-Powered Cost Estimation**
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-[![Go Version](https://img.shields.io/badge/go-1.23+-00ADD8.svg)](https://golang.org/)
-[![Node Version](https://img.shields.io/badge/node-18+-339933.svg)](https://nodejs.org/)
+[![Go Version](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://golang.org/)
+[![Node Version](https://img.shields.io/badge/node-20+-339933.svg)](https://nodejs.org/)
+[![CI](https://github.com/Raj-glitch-max/AutoStack-GO-Svelte/workflows/CI/badge.svg)](https://github.com/Raj-glitch-max/AutoStack-GO-Svelte/actions/workflows/ci.yml)
+[![CD](https://github.com/Raj-glitch-max/AutoStack-GO-Svelte/workflows/CD/badge.svg)](https://github.com/Raj-glitch-max/AutoStack-GO-Svelte/actions/workflows/cd.yml)
+[![Security](https://github.com/Raj-glitch-max/AutoStack-GO-Svelte/workflows/Security%20Scan/badge.svg)](https://github.com/Raj-glitch-max/AutoStack-GO-Svelte/actions/workflows/security.yml)
 
 AutoStack simplifies cloud deployments with real-time cost estimation, AI-powered error recovery, and one-click infrastructure provisioning.
 
@@ -17,6 +20,7 @@ AutoStack simplifies cloud deployments with real-time cost estimation, AI-powere
 - 📦 **Blueprint System** - Reusable templates for common architectures
 - 🔐 **Secure by Default** - Encrypted credentials and user isolation
 - 📊 **Live Monitoring** - Real-time logs and deployment status
+- 🔄 **Production CI/CD** - Automated testing, security scanning, and deployment
 
 ## 🚀 Quick Start
 
@@ -93,7 +97,7 @@ Deploy multiple services with API Gateway + SQS for ~$50/month
 - Flowbite
 
 **Backend:**
-- Go 1.23+
+- Go 1.24+
 - PocketBase (SQLite)
 - Kubernetes Client
 - Terraform
@@ -106,6 +110,42 @@ Deploy multiple services with API Gateway + SQS for ~$50/month
 **APIs:**
 - Infracost (cost estimation)
 - Resend (email notifications)
+
+## 🔄 CI/CD Pipeline
+
+AutoStack uses a production-grade CI/CD pipeline with GitHub Actions:
+
+### Workflows
+
+- **CI**: Automated testing, linting, and validation on every PR
+- **CD**: Automated deployment to staging (develop) and production (main)
+- **Security**: Daily vulnerability scanning with Trivy, gosec, and npm audit
+- **Terraform**: Validation of infrastructure templates
+- **Release**: Automated releases with multi-arch Docker images
+
+### Deployment Strategy
+
+```
+feature/* → develop → main → v1.2.3
+              ↓        ↓       ↓
+           STAGING  PRODUCTION RELEASE
+```
+
+### Quick Links
+
+- 📖 [CI/CD Setup Guide](docs/CI_CD_SETUP.md) - Complete setup instructions
+- 🚀 [Deployment Workflow](docs/DEPLOYMENT_WORKFLOW.md) - Developer quick reference
+- 📋 [Implementation Summary](docs/CI_CD_IMPLEMENTATION_SUMMARY.md) - Technical details
+
+### Features
+
+- ✅ Automated testing and linting
+- ✅ Docker image building and pushing to ghcr.io
+- ✅ Kubernetes deployment with rollout verification
+- ✅ Environment-based approval gates
+- ✅ Slack notifications
+- ✅ Security scanning and vulnerability detection
+- ✅ Automated releases with changelogs
 
 ## 📊 Cost Transparency
 
@@ -124,6 +164,17 @@ AutoStack shows you **exact costs before deployment**:
 
 We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
+### Development Workflow
+
+1. Fork the repository
+2. Create a feature branch from `develop`
+3. Make your changes
+4. Run tests: `go test ./...` and `npm run check`
+5. Create a pull request to `develop`
+6. CI will automatically run tests and checks
+
+See [Deployment Workflow](docs/DEPLOYMENT_WORKFLOW.md) for detailed instructions.
+
 ## 📝 License
 
 Apache License 2.0 - see [LICENSE](LICENSE) for details.
@@ -138,6 +189,7 @@ Apache License 2.0 - see [LICENSE](LICENSE) for details.
 ## 📞 Support
 
 - **Documentation**: [docs/](docs/)
+- **CI/CD Setup**: [docs/CI_CD_SETUP.md](docs/CI_CD_SETUP.md)
 - **Issues**: [GitHub Issues](https://github.com/Raj-glitch-max/AutoStack/issues)
 - **Discussions**: [GitHub Discussions](https://github.com/Raj-glitch-max/AutoStack/discussions)
 

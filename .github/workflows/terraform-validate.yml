@@ -1,0 +1,116 @@
+name: Terraform Validate
+
+on:
+  push:
+    paths:
+      - "pocketbase/templates/**"
+  pull_request:
+    paths:
+      - "pocketbase/templates/**"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate Terraform Templates
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.5"
+
+      - name: Check formatting
+        working-directory: ./pocketbase/templates
+        run: terraform fmt -check -diff -recursive
+
+      - name: Validate ecs-web-app template
+        working-directory: ./pocketbase/templates
+        run: |
+          cat > ecs-web-app-test.tf << 'EOF'
+          terraform {
+            required_version = ">= 1.0"
+            required_providers {
+              aws = {
+                source  = "hashicorp/aws"
+                version = "~> 5.0"
+              }
+            }
+          }
+          provider "aws" {
+            region = "us-east-1"
+            skip_credentials_validation = true
+            skip_requesting_account_id  = true
+            skip_metadata_api_check     = true
+          }
+          EOF
+          terraform init -backend=false
+          terraform validate
+          rm -f ecs-web-app-test.tf .terraform.lock.hcl
+          rm -rf .terraform
+
+      - name: Validate full-stack template
+        working-directory: ./pocketbase/templates
+        run: |
+          cat > full-stack-test.tf << 'EOF'
+          terraform {
+            required_version = ">= 1.0"
+            required_providers {
+              aws = {
+                source  = "hashicorp/aws"
+                version = "~> 5.0"
+              }
+            }
+          }
+          provider "aws" {
+            region = "us-east-1"
+            skip_credentials_validation = true
+            skip_requesting_account_id  = true
+            skip_metadata_api_check     = true
+          }
+          EOF
+          terraform init -backend=false
+          terraform validate
+          rm -f full-stack-test.tf .terraform.lock.hcl
+          rm -rf .terraform
+
+      - name: Validate static-site template
+        working-directory: ./pocketbase/templates
+        run: |
+          cat > static-site-test.tf << 'EOF'
+          terraform {
+            required_version = ">= 1.0"
+            required_providers {
+              aws = {
+                source  = "hashicorp/aws"
+                version = "~> 5.0"
+              }
+            }
+          }
+          provider "aws" {
+            region = "us-east-1"
+            skip_credentials_validation = true
+            skip_requesting_account_id  = true
+            skip_metadata_api_check     = true
+          }
+          EOF
+          terraform init -backend=false
+          terraform validate
+          rm -f static-site-test.tf .terraform.lock.hcl
+          rm -rf .terraform
+
+      - name: Run tflint
+        uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.51.0
+
+      - name: Init tflint
+        working-directory: ./pocketbase/templates
+        run: tflint --init
+
+      - name: Run tflint on templates
+        working-directory: ./pocketbase/templates
+        run: tflint --format compact
