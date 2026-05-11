@@ -128,11 +128,11 @@
     }
   ];
 
-  $: filteredBlueprints = $blueprints.length > 0 
+  $: filteredBlueprints = ($blueprints.length > 0 
     ? $blueprints.filter(
-        (blueprint) => blueprint.expand?.owner?.id === client.authStore.record?.id || blueprint.public === true
+        (blueprint: any) => blueprint.expand?.owner?.id === client.authStore.record?.id || (blueprint as any).public === true
       )
-    : tempKubernetesBlueprints;
+    : tempKubernetesBlueprints) as BlueprintsResponse[];
   $: selectedBlueprint = filteredBlueprints[0];
 
   // Load AWS blueprints when AWS target is selected
@@ -199,23 +199,23 @@
     }
 
     // Clean up manifest - remove any ingresses from the blueprint manifest
-    let cleanManifest = selectedBlueprint?.manifest ? { ...selectedBlueprint.manifest } : {};
+    let cleanManifest: any = selectedBlueprint?.manifest ? { ...selectedBlueprint.manifest } : {};
     
     // Safely check for interfaces and remove ingress objects
     try {
       if (cleanManifest && typeof cleanManifest === 'object') {
         // Check if it's an AutoStack-style manifest with spec.interfaces
-        if (cleanManifest.spec && cleanManifest.spec.interfaces && Array.isArray(cleanManifest.spec.interfaces)) {
-          for (let i = 0; i < cleanManifest.spec.interfaces.length; i++) {
-            if (cleanManifest.spec.interfaces[i] && cleanManifest.spec.interfaces[i].ingress) {
-              delete cleanManifest.spec.interfaces[i].ingress;
+        if ((cleanManifest as any).spec && (cleanManifest as any).spec.interfaces && Array.isArray((cleanManifest as any).spec.interfaces)) {
+          for (let i = 0; i < (cleanManifest as any).spec.interfaces.length; i++) {
+            if ((cleanManifest as any).spec.interfaces[i] && (cleanManifest as any).spec.interfaces[i].ingress) {
+              delete (cleanManifest as any).spec.interfaces[i].ingress;
             }
           }
         }
         
         // Check if it's a Kubernetes List with items that might have ingress
-        if (cleanManifest.kind === 'List' && cleanManifest.items && Array.isArray(cleanManifest.items)) {
-          cleanManifest.items = cleanManifest.items.filter((item: any) => 
+        if ((cleanManifest as any).kind === 'List' && (cleanManifest as any).items && Array.isArray((cleanManifest as any).items)) {
+          (cleanManifest as any).items = (cleanManifest as any).items.filter((item: any) => 
             item && item.kind !== 'Ingress'
           );
         }

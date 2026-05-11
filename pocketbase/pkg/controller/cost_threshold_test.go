@@ -1,17 +1,18 @@
 package controller
 
 import (
-	"testing"
-
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/models"
+	"testing"
+
 	"github.com/pocketbase/pocketbase/tests"
+	"github.com/pocketbase/pocketbase/tools/security"
 )
 
 // TestValidateThreshold tests threshold validation
 // Validates: Threshold must be a positive number
 func TestValidateThreshold(t *testing.T) {
-	tests := []struct {
+	testCases := []struct {
 		name      string
 		threshold float64
 		wantError bool
@@ -53,7 +54,7 @@ func TestValidateThreshold(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			err := validateThreshold(tt.threshold)
 
@@ -73,6 +74,7 @@ func TestValidateThreshold(t *testing.T) {
 func TestThresholdDatabaseIntegration(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create test user
 	user, err := createTestUser(app, "test@example.com")
@@ -103,6 +105,7 @@ func TestThresholdDatabaseIntegration(t *testing.T) {
 func TestThresholdUpdate(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create test user
 	user, err := createTestUser(app, "test@example.com")
@@ -139,6 +142,7 @@ func TestThresholdUpdate(t *testing.T) {
 func TestThresholdDefaultValue(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create test user
 	user, err := createTestUser(app, "test@example.com")
@@ -172,9 +176,13 @@ func createTestUser(app core.App, email string) (*models.Record, error) {
 	}
 
 	user := models.NewRecord(collection)
-	user.Set("email", email)
-	user.Set("password", "test123456")
-	user.Set("passwordConfirm", "test123456")
+	// username is required by PocketBase auth record validation
+	randomPart := security.RandomString(5)
+	user.Set("username", "testuser_"+randomPart)
+	user.Set("email", randomPart+"_"+email)
+	user.Set("password", "test123456!")
+	user.Set("passwordConfirm", "test123456!")
+	user.Set("tokenKey", security.RandomString(50))
 
 	if err := app.Dao().SaveRecord(user); err != nil {
 		return nil, err

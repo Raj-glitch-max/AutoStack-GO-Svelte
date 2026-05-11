@@ -17,6 +17,7 @@ type WebSocketLogStreamer struct {
 
 // LogMessage represents a log message sent over WebSocket
 type LogMessage struct {
+	Type         string    `json:"type"` // always "log"
 	DeploymentID string    `json:"deploymentId"`
 	RolloutID    string    `json:"rolloutId"`
 	Operation    string    `json:"operation"`
@@ -35,6 +36,7 @@ func NewWebSocketLogStreamer() *WebSocketLogStreamer {
 // StreamLog sends a log message to all connected WebSocket clients for the deployment
 func (w *WebSocketLogStreamer) StreamLog(deploymentID, rolloutID, operation, level, message string) error {
 	logMsg := LogMessage{
+		Type:         "log",
 		DeploymentID: deploymentID,
 		RolloutID:    rolloutID,
 		Operation:    operation,

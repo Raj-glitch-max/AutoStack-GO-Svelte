@@ -60,10 +60,10 @@
     }).format(amount);
   }
   
-  function getCostColor(amount: number): string {
+  function getCostColor(amount: number): "blue" | "green" | "yellow" | "red" | "indigo" | "purple" | "pink" | "none" | "dark" | "primary" {
     if (amount < 10) return 'green';
     if (amount < 50) return 'yellow';
-    if (amount < 100) return 'orange';
+    if (amount < 100) return 'yellow';
     return 'red';
   }
 </script>
@@ -146,12 +146,13 @@
           </h4>
           
           {#each Object.entries(costEstimate.breakdown) as [service, cost]}
+            {@const costValue = typeof cost === 'number' ? cost : 0}
             <div class="flex justify-between items-center py-2 px-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
               <span class="text-sm text-gray-700 dark:text-gray-300">
                 {service}
               </span>
               <span class="font-medium text-gray-900 dark:text-white">
-                {formatCurrency(cost)}
+                {formatCurrency(costValue)}
               </span>
             </div>
           {/each}

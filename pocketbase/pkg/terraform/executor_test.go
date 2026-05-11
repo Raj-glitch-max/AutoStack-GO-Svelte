@@ -18,12 +18,14 @@ func TestBuildSafeEnvNoPropagation(t *testing.T) {
 
 	env := buildSafeEnv(creds)
 
-	// Verify only expected variables are present
-	expectedVars := map[string]bool{
+	// Allowlist of variables buildSafeEnv is permitted to include.
+	// Any variable NOT in this list causes the test to fail.
+	allowedVars := map[string]bool{
 		"AWS_ACCESS_KEY_ID":     false,
 		"AWS_SECRET_ACCESS_KEY": false,
 		"AWS_DEFAULT_REGION":    false,
 		"PATH":                  false,
+		"CHECKPOINT_DISABLE":    false, // Suppresses terraform telemetry/upgrade checks
 	}
 
 	for _, envVar := range env {
@@ -34,25 +36,28 @@ func TestBuildSafeEnvNoPropagation(t *testing.T) {
 		}
 
 		key := parts[0]
-		if _, expected := expectedVars[key]; expected {
-			expectedVars[key] = true
+		if _, allowed := allowedVars[key]; allowed {
+			allowedVars[key] = true
 		} else {
 			t.Errorf("Unexpected environment variable in buildSafeEnv: %s", key)
 		}
 	}
 
-	// Verify all expected variables were found
-	for key, found := range expectedVars {
-		if !found {
-			t.Errorf("Expected environment variable not found: %s", key)
+	// Verify all required variables were found.
+	requiredVars := []string{"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_DEFAULT_REGION", "PATH"}
+	for _, key := range requiredVars {
+		if !allowedVars[key] {
+			t.Errorf("Required environment variable not found: %s", key)
 		}
 	}
 
-	// Verify we have exactly 4 variables (no extras from os.Environ())
-	if len(env) != 4 {
-		t.Errorf("Expected exactly 4 environment variables, got %d", len(env))
+	// Verify no extra variables snuck in from os.Environ().
+	// Expected: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION, PATH, CHECKPOINT_DISABLE = 5
+	if len(env) != 5 {
+		t.Errorf("Expected exactly 5 environment variables (no os.Environ() leakage), got %d", len(env))
 	}
 }
+
 
 // TestBuildSafeEnvNoTFLog verifies that buildSafeEnv does not include TF_LOG
 func TestBuildSafeEnvNoTFLog(t *testing.T) {
@@ -96,11 +101,13 @@ func TestBuildSafeEnvWithSessionToken(t *testing.T) {
 		t.Error("AWS_SESSION_TOKEN should be included when present in credentials")
 	}
 
-	// Should have 5 variables now (including session token)
-	if len(env) != 5 {
-		t.Errorf("Expected 5 environment variables with session token, got %d", len(env))
+	// Expected: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION,
+	// PATH, CHECKPOINT_DISABLE, AWS_SESSION_TOKEN = 6
+	if len(env) != 6 {
+		t.Errorf("Expected 6 environment variables with session token, got %d", len(env))
 	}
 }
+
 
 // TestBuildSafeEnvWithoutSessionToken verifies session token is not included when empty
 func TestBuildSafeEnvWithoutSessionToken(t *testing.T) {
@@ -120,11 +127,13 @@ func TestBuildSafeEnvWithoutSessionToken(t *testing.T) {
 		}
 	}
 
-	// Should have 4 variables (no session token)
-	if len(env) != 4 {
-		t.Errorf("Expected 4 environment variables without session token, got %d", len(env))
+	// Expected: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_DEFAULT_REGION,
+	// PATH, CHECKPOINT_DISABLE = 5 (no session token)
+	if len(env) != 5 {
+		t.Errorf("Expected 5 environment variables without session token, got %d", len(env))
 	}
 }
+
 
 // TestFilterSensitiveLineRedactsSecrets verifies that sensitive data is filtered
 func TestFilterSensitiveLineRedactsSecrets(t *testing.T) {

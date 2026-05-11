@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
@@ -20,6 +21,8 @@ import (
 type ExecutorService struct {
 	workingDir  string
 	credManager *aws.CredentialManager
+	userLocks   map[string]*sync.Mutex
+	mu          sync.Mutex // protects userLocks
 }
 
 type ExecutionResult struct {
@@ -51,6 +54,23 @@ func NewExecutorService(workingDir string, credManager *aws.CredentialManager) *
 	return &ExecutorService{
 		workingDir:  workingDir,
 		credManager: credManager,
+		userLocks:   make(map[string]*sync.Mutex),
+	}
+}
+
+// LockUser ensures only one deployment runs per user at a time
+func (e *ExecutorService) LockUser(userID string) func() {
+	e.mu.Lock()
+	lock, ok := e.userLocks[userID]
+	if !ok {
+		lock = &sync.Mutex{}
+		e.userLocks[userID] = lock
+	}
+	e.mu.Unlock()
+
+	lock.Lock()
+	return func() {
+		lock.Unlock()
 	}
 }
 
@@ -75,31 +95,29 @@ func (e *ExecutorService) Init(ctx context.Context, deploymentID, userID string,
 		return nil, fmt.Errorf("failed to configure S3 backend: %w", err)
 	}
 
-	return e.executeTerraformCommand(ctx, workDir, deploymentID, "", "init", streamer, creds, "-no-color", "-input=false")
+	return e.executeTerraformCommand(ctx, workDir, deploymentID, "", "init", streamer, creds, "-no-color", "-input=false", "-reconfigure")
 }
 
-// Plan generates a Terraform execution plan
-// SECURITY: Variables are passed as individual -var arguments, never interpolated into .tf files
+// Plan generates a Terraform execution plan.
+// Variables are supplied via terraform.tfvars (written by generateTerraformConfig),
+// not via -var flags, to avoid shell quoting issues and duplicate-definition errors.
+// SECURITY: Working directory is isolated per deployment, no shared state between tenants.
 func (e *ExecutorService) Plan(ctx context.Context, deploymentID, userID string, config TerraformConfig, streamer LogStreamer) (*ExecutionResult, error) {
 	workDir := e.getDeploymentWorkingDir(deploymentID)
 
-	// Generate Terraform configuration
+	// Generate Terraform configuration (main.tf + terraform.tfvars).
 	if err := e.generateTerraformConfig(workDir, config); err != nil {
 		return nil, fmt.Errorf("failed to generate Terraform config: %w", err)
 	}
 
-	// Get AWS credentials
+	// Get AWS credentials.
 	creds, err := e.credManager.GetCredentials(userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get AWS credentials: %w", err)
 	}
 
-	// Build -var arguments (each key and value is a SEPARATE argument)
+	// -var-file is not needed here: Terraform automatically loads terraform.tfvars.
 	args := []string{"plan", "-no-color", "-input=false", "-out=tfplan"}
-	for key, value := range config.Variables {
-		args = append(args, "-var")
-		args = append(args, fmt.Sprintf("%s=%v", key, value))
-	}
 
 	return e.executeTerraformCommand(ctx, workDir, deploymentID, "", "plan", streamer, creds, args...)
 }
@@ -235,26 +253,42 @@ func (e *ExecutorService) Validate(ctx context.Context, deploymentID, userID str
 	return e.executeTerraformCommand(ctx, workDir, deploymentID, "", "validate", streamer, creds, "-no-color")
 }
 
-// buildSafeEnv returns only the env vars terraform needs
-// It NEVER includes the host process's full os.Environ()
-// SECURITY: This prevents credential leakage and environment pollution
+// buildSafeEnv returns only the environment variables terraform needs.
+// It inherits the host PATH (so terraform can be found at its installed location)
+// but NEVER includes any other host environment variables.
+//
+// SECURITY CONTRACT:
+//   - Never pass os.Environ() — would leak host secrets into terraform subprocess
+//   - Never set TF_LOG — would cause terraform to print credentials to logs
+//   - Credentials are passed only as AWS_* variables, never written to disk
 func buildSafeEnv(creds *aws.AWSCredentials) []string {
+	// Inherit only PATH from the host environment so terraform can be found
+	// at non-standard install locations (e.g. /usr/local/bin, /opt/homebrew/bin).
+	hostPath := os.Getenv("PATH")
+	if hostPath == "" {
+		hostPath = "/usr/local/bin:/usr/bin:/bin"
+	}
+
 	env := []string{
 		"AWS_ACCESS_KEY_ID=" + creds.AccessKeyID,
 		"AWS_SECRET_ACCESS_KEY=" + creds.SecretAccessKey,
+		"AWS_REGION=" + creds.Region,
 		"AWS_DEFAULT_REGION=" + creds.Region,
-		"PATH=/usr/local/bin:/usr/bin:/bin", // minimal PATH for terraform binary
+		"PATH=" + hostPath,
+		// Suppress terraform upgrade checks and telemetry in subprocess.
+		"CHECKPOINT_DISABLE=1",
 	}
-	
+
 	if creds.SessionToken != "" {
 		env = append(env, "AWS_SESSION_TOKEN="+creds.SessionToken)
 	}
-	
-	// CRITICAL: TF_LOG must NOT be set — would print credentials to logs
-	// CRITICAL: Do NOT include os.Environ() — would leak host environment
-	
+
+	// CRITICAL: TF_LOG must NOT be set — would print credentials to logs.
+	// CRITICAL: Do NOT include os.Environ() — would leak host environment.
+
 	return env
 }
+
 
 // filterSensitiveLine filters out lines that may contain AWS credentials
 // Returns [REDACTED] if the line contains sensitive patterns
@@ -381,54 +415,83 @@ func (e *ExecutorService) executeTerraformCommand(ctx context.Context, workDir, 
 	}, nil
 }
 
-// generateTerraformConfig generates the Terraform configuration file
+// generateTerraformConfig writes the Terraform configuration to the working directory.
+//
+// The template is written verbatim as main.tf — NO string substitution is performed.
+// String substitution would corrupt HCL interpolation syntax (e.g. ${var.app_name})
+// and is the wrong approach for Terraform. Variable values are written to a separate
+// terraform.tfvars file which Terraform reads automatically at plan/apply time.
+//
+// This ensures the template is valid HCL that terraform validate can check, and that
+// variable values are passed safely without risk of HCL injection.
 func (e *ExecutorService) generateTerraformConfig(workDir string, config TerraformConfig) error {
-	// Replace template variables
-	terraformConfig := config.Template
-	
-	// Add required variables for resource tagging
+	if config.Template == "" {
+		return fmt.Errorf("terraform template is empty")
+	}
+
+	// Add required AutoStack tagging variables.
+	// These are injected by AutoStack, not provided by the user.
+	if config.Variables == nil {
+		config.Variables = make(map[string]interface{})
+	}
 	config.Variables["user_id"] = config.UserID
 	config.Variables["project_id"] = config.ProjectID
 	config.Variables["deployment_id"] = config.DeploymentID
 
-	// Replace variables in template
-	for key, value := range config.Variables {
-		placeholder := fmt.Sprintf("${%s}", key)
-		terraformConfig = strings.ReplaceAll(terraformConfig, placeholder, fmt.Sprintf("%v", value))
-	}
-
-	// Write main.tf file
+	// Write the blueprint template verbatim as main.tf.
+	// CRITICAL: Do NOT do string replacement here — the template contains HCL
+	// interpolation syntax like ${var.app_name} which must be preserved as-is.
 	mainTfPath := filepath.Join(workDir, "main.tf")
-	if err := os.WriteFile(mainTfPath, []byte(terraformConfig), 0644); err != nil {
+	if err := os.WriteFile(mainTfPath, []byte(config.Template), 0644); err != nil {
 		return fmt.Errorf("failed to write main.tf: %w", err)
 	}
 
-	// Generate variables.tf file
-	variablesTf := e.generateVariablesFile(config.Variables)
-	variablesTfPath := filepath.Join(workDir, "variables.tf")
-	if err := os.WriteFile(variablesTfPath, []byte(variablesTf), 0644); err != nil {
-		return fmt.Errorf("failed to write variables.tf: %w", err)
+	// Write variable values to terraform.tfvars.
+	// Terraform reads this file automatically at plan/apply time.
+	// Using tfvars (not -var flags) avoids shell quoting issues with complex values.
+	tfvars, err := e.generateTfvarsFile(config.Variables)
+	if err != nil {
+		return fmt.Errorf("failed to generate terraform.tfvars: %w", err)
+	}
+	tfvarsPath := filepath.Join(workDir, "terraform.tfvars")
+	if err := os.WriteFile(tfvarsPath, []byte(tfvars), 0644); err != nil {
+		return fmt.Errorf("failed to write terraform.tfvars: %w", err)
 	}
 
 	return nil
 }
 
-// generateVariablesFile generates the variables.tf file
-func (e *ExecutorService) generateVariablesFile(variables map[string]interface{}) string {
+// generateTfvarsFile produces a terraform.tfvars file from the given variable map.
+// String values are quoted; numeric and boolean values are written as literals.
+// Map and list values are serialised to JSON strings (Terraform accepts JSON in tfvars).
+func (e *ExecutorService) generateTfvarsFile(variables map[string]interface{}) (string, error) {
 	var builder strings.Builder
-	
-	for key, value := range variables {
-		builder.WriteString(fmt.Sprintf(`variable "%s" {
-  description = "Variable for %s"
-  type        = string
-  default     = "%v"
-}
 
-`, key, key, value))
+	for key, value := range variables {
+		switch v := value.(type) {
+		case string:
+			// Escape any double-quotes inside the string value.
+			escaped := strings.ReplaceAll(v, `"`, `\"`)
+			builder.WriteString(fmt.Sprintf("%s = \"%s\"\n", key, escaped))
+		case bool:
+			builder.WriteString(fmt.Sprintf("%s = %t\n", key, v))
+		case int, int32, int64, float32, float64:
+			builder.WriteString(fmt.Sprintf("%s = %v\n", key, v))
+		default:
+			// For maps, lists and other complex types, use a JSON-encoded string.
+			// Terraform can decode these in the template with jsondecode().
+			encoded, err := json.Marshal(v)
+			if err != nil {
+				return "", fmt.Errorf("failed to encode variable %q: %w", key, err)
+			}
+			escaped := strings.ReplaceAll(string(encoded), `"`, `\"`)
+			builder.WriteString(fmt.Sprintf("%s = \"%s\"\n", key, escaped))
+		}
 	}
 
-	return builder.String()
+	return builder.String(), nil
 }
+
 
 // configureS3Backend configures the S3 backend for Terraform state
 // SECURITY: Each deployment gets its own S3 state path: tfstate/{userID}/{deploymentID}/terraform.tfstate

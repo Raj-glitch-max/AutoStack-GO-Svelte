@@ -10,6 +10,7 @@ import (
 func TestNewCostMonitor(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -29,6 +30,7 @@ func TestNewCostMonitor(t *testing.T) {
 func TestCheckCostAnomalies_NoDeployments(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -50,13 +52,14 @@ func TestCheckCostAnomalies_NoDeployments(t *testing.T) {
 func TestCalculateVariance(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
 		t.Fatalf("Failed to create cost monitor: %v", err)
 	}
 
-	tests := []struct {
+	testCases := []struct {
 		name     string
 		actual   float64
 		estimate float64
@@ -88,7 +91,7 @@ func TestCalculateVariance(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			variance := monitor.calculateVariance(tt.actual, tt.estimate)
 			if variance != tt.expected {
@@ -102,6 +105,7 @@ func TestCalculateVariance(t *testing.T) {
 func TestSetAlertThreshold(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -125,6 +129,7 @@ func TestSetAlertThreshold(t *testing.T) {
 func TestGetAlertThreshold(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -141,6 +146,7 @@ func TestGetAlertThreshold(t *testing.T) {
 func TestCostMonitor_DefaultThreshold(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -157,6 +163,7 @@ func TestCostMonitor_DefaultThreshold(t *testing.T) {
 func TestCostMonitor_VarianceCalculation(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -198,6 +205,7 @@ func TestCostMonitor_VarianceCalculation(t *testing.T) {
 func TestCostMonitor_ZeroEstimateHandling(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 func TestFargateCostCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewFargateCostCalculator(app)
 
@@ -104,6 +105,7 @@ func TestFargateCostCalculator(t *testing.T) {
 func TestS3CostCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewS3CostCalculator(app)
 
@@ -162,6 +164,7 @@ func TestS3CostCalculator(t *testing.T) {
 func TestALBCostCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewALBCostCalculator(app)
 
@@ -212,6 +215,7 @@ func TestALBCostCalculator(t *testing.T) {
 func TestRDSCostCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewRDSCostCalculator(app)
 
@@ -283,6 +287,7 @@ func TestRDSCostCalculator(t *testing.T) {
 func TestCloudFrontCostCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewCloudFrontCostCalculator(app)
 
@@ -330,6 +335,7 @@ func TestCloudFrontCostCalculator(t *testing.T) {
 func TestRoute53CostCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewRoute53CostCalculator(app)
 
@@ -376,6 +382,7 @@ func TestCostPositivity(t *testing.T) {
 	// Property: All cost estimates must be positive numbers
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	t.Run("FargatePositivity", func(t *testing.T) {
 		calc := NewFargateCostCalculator(app)
@@ -404,6 +411,7 @@ func TestRangeConsistency(t *testing.T) {
 	// Property: Cost ranges must satisfy min ≤ estimate ≤ max
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewFargateCostCalculator(app)
 	config := FargateConfig{

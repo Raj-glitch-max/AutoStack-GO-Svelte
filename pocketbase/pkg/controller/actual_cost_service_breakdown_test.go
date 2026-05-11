@@ -148,7 +148,7 @@ func TestServiceBreakdown_CommonAWSServices(t *testing.T) {
 // TestServiceBreakdown_SumsToTotal tests that breakdown sums to total cost
 // Validates: AC-3.5 (Breakdown sums to total cost)
 func TestServiceBreakdown_SumsToTotal(t *testing.T) {
-	tests := []struct {
+	testCases := []struct {
 		name      string
 		breakdown map[string]float64
 		total     float64
@@ -204,7 +204,7 @@ func TestServiceBreakdown_SumsToTotal(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			// Calculate sum of breakdown
 			sum := 0.0
@@ -308,7 +308,7 @@ func TestServiceBreakdown_EmptyBreakdown(t *testing.T) {
 // Validates: AC-3.5 (Format service names consistently)
 func TestServiceBreakdown_ConsistentNaming(t *testing.T) {
 	// Test various service name formats
-	tests := []struct {
+	testCases := []struct {
 		name        string
 		serviceName string
 		isValid     bool
@@ -346,7 +346,7 @@ func TestServiceBreakdown_ConsistentNaming(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			breakdown := map[string]float64{
 				tt.serviceName: 10.00,
@@ -405,7 +405,7 @@ func TestServiceBreakdown_ConsistentNaming(t *testing.T) {
 // TestServiceBreakdown_RoundingPrecision tests that service costs are rounded to 2 decimals
 // Validates: TR-2.4 (Round to 2 decimal places for display)
 func TestServiceBreakdown_RoundingPrecision(t *testing.T) {
-	tests := []struct {
+	testCases := []struct {
 		name     string
 		input    float64
 		expected float64
@@ -437,7 +437,7 @@ func TestServiceBreakdown_RoundingPrecision(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			// Round using the same logic as the implementation
 			rounded := float64(int(tt.input*100+0.5)) / 100

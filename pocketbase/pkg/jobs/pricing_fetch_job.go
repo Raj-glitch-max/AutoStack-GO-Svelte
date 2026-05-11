@@ -7,6 +7,7 @@ import (
 
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/notifications"
 )
 
 // createPricingFetchJob creates the daily pricing fetch job function
@@ -57,8 +58,11 @@ func (ps *PricingScheduler) createActualCostFetchJob() func() error {
 	return func() error {
 		log.Println("Starting actual cost fetch job for active deployments...")
 		
+		// Create email service
+		emailService := notifications.NewEmailService()
+		
 		// Create actual cost fetcher
-		fetcher, err := aws.NewActualCostFetcher(ps.app)
+		fetcher, err := aws.NewActualCostFetcher(ps.app, emailService)
 		if err != nil {
 			return fmt.Errorf("failed to create actual cost fetcher: %w", err)
 		}

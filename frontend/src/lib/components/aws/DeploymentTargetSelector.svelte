@@ -29,7 +29,11 @@
                {selectedTarget === target.id 
                  ? 'border-primary-600 bg-primary-50 dark:bg-primary-900/20' 
                  : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600'}"
-        on:click={() => selectedTarget = target.id}
+        on:click={() => {
+          if (target.id === 'kubernetes' || target.id === 'aws') {
+            selectedTarget = target.id;
+          }
+        }}
       >
         <div class="flex items-start space-x-3">
           <div class="text-2xl">{target.icon}</div>

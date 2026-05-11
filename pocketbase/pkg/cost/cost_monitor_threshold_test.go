@@ -1,10 +1,10 @@
 package cost
 
 import (
-	"testing"
-
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/models"
+	"testing"
+
 	"github.com/pocketbase/pocketbase/tests"
 )
 
@@ -12,6 +12,7 @@ import (
 func TestGetDeploymentThreshold_CustomThreshold(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -37,6 +38,7 @@ func TestGetDeploymentThreshold_CustomThreshold(t *testing.T) {
 func TestGetDeploymentThreshold_DefaultThreshold(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -62,6 +64,7 @@ func TestGetDeploymentThreshold_DefaultThreshold(t *testing.T) {
 func TestGetDeploymentThreshold_NonExistentDeployment(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -81,6 +84,7 @@ func TestGetDeploymentThreshold_NonExistentDeployment(t *testing.T) {
 func TestGetDeploymentThreshold_ZeroThreshold(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {
@@ -104,7 +108,7 @@ func TestGetDeploymentThreshold_ZeroThreshold(t *testing.T) {
 
 // TestGetDeploymentThreshold_VariousThresholds tests various threshold values
 func TestGetDeploymentThreshold_VariousThresholds(t *testing.T) {
-	tests := []struct {
+	testCases := []struct {
 		name              string
 		customThreshold   float64
 		expectedThreshold float64
@@ -136,10 +140,11 @@ func TestGetDeploymentThreshold_VariousThresholds(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			app, _ := tests.NewTestApp()
 			defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 			monitor, err := NewCostMonitor(app)
 			if err != nil {
@@ -167,6 +172,7 @@ func TestGetDeploymentThreshold_VariousThresholds(t *testing.T) {
 func TestCostMonitor_ThresholdValidation(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	monitor, err := NewCostMonitor(app)
 	if err != nil {

@@ -18,6 +18,7 @@
   import { FileQuestion } from "lucide-svelte";
   import { avatarUrlString } from "$lib/stores/avatar";
   import { determineRolloutColor } from "$lib/utils/color";
+  import NotificationBell from "./NotificationBell.svelte";
 
   $: {
     if ($page.url.pathname.startsWith("/app/projects/")) {
@@ -81,8 +82,11 @@
     {/if}
 
     <!-- <ComboBox /> -->
-    <div class="flex items-center md:order-2 cursor-pointer active:scale-105">
-      <Avatar id="avatar-menu" src={$avatarUrlString} />
+    <div class="flex items-center md:order-2">
+      <NotificationBell />
+      <div class="cursor-pointer active:scale-105">
+        <Avatar id="avatar-menu" src={$avatarUrlString} />
+      </div>
     </div>
     <Dropdown placement="bottom" triggeredBy="#avatar-menu">
       <DropdownHeader>
@@ -93,6 +97,11 @@
         on:click={() => {
           goto("/app/profile");
         }}>Settings</DropdownItem
+      >
+      <DropdownItem
+        on:click={() => {
+          goto("/app/alerts");
+        }}>Alerts</DropdownItem
       >
       <DropdownDivider />
       <DropdownItem

@@ -208,6 +208,20 @@ func (ps *PricingScheduler) scheduleDefaultJobs() error {
 	if err := ps.ScheduleJob(costAnomalyConfig, ps.createCostAnomalyDetectionJob()); err != nil {
 		return fmt.Errorf("failed to schedule cost anomaly detection: %w", err)
 	}
+
+	// Weekly AI cost optimization (Monday 6 AM UTC)
+	aiOptimizerConfig := JobConfig{
+		Name:        "weekly-ai-cost-optimizer",
+		Schedule:    "0 0 6 * * 1", // Every Monday at 6:00 AM UTC
+		Enabled:     true,
+		Timeout:     30 * time.Minute,
+		MaxRetries:  1,
+		Description: "AI-powered weekly cost optimization analysis per user",
+	}
+
+	if err := ps.ScheduleJob(aiOptimizerConfig, ps.createAIOptimizerJob()); err != nil {
+		return fmt.Errorf("failed to schedule AI optimizer job: %w", err)
+	}
 	
 	return nil
 }

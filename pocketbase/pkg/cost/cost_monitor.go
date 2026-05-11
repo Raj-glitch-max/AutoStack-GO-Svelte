@@ -1,6 +1,7 @@
 package cost
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -8,6 +9,7 @@ import (
 	"github.com/pocketbase/pocketbase/core"
 	"github.com/pocketbase/pocketbase/models"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/intelligence"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/notifications"
 )
 
@@ -53,7 +55,7 @@ type DeploymentInfo struct {
 func NewCostMonitor(app core.App) (*CostMonitor, error) {
 	notifier := notifications.NewEmailService()
 	
-	costFetcher, err := aws.NewActualCostFetcher(app)
+	costFetcher, err := aws.NewActualCostFetcher(app, notifier)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cost fetcher: %w", err)
 	}
@@ -66,13 +68,101 @@ func NewCostMonitor(app core.App) (*CostMonitor, error) {
 	}, nil
 }
 
+// GetAlertThreshold returns the current global alert threshold
+func (cm *CostMonitor) GetAlertThreshold() float64 {
+	return cm.alertThreshold
+}
+
+// SetAlertThreshold sets the global alert threshold
+func (cm *CostMonitor) SetAlertThreshold(threshold float64) {
+	cm.alertThreshold = threshold
+}
+
+// getUserAlertThreshold gets the alert threshold for a specific user
+// Falls back to global threshold if user has no custom preference
+func (cm *CostMonitor) getUserAlertThreshold(userID string) float64 {
+	user, err := cm.app.Dao().FindRecordById("users", userID)
+	if err != nil {
+		return cm.alertThreshold // Fallback to global
+	}
+
+	prefs := user.Get("alertPreferences")
+	if prefs == nil {
+		return cm.alertThreshold // Fallback to global
+	}
+
+	// Try to extract threshold from preferences
+	if prefsMap, ok := prefs.(map[string]interface{}); ok {
+		if threshold, ok := prefsMap["threshold"].(float64); ok {
+			return threshold
+		}
+	}
+
+	return cm.alertThreshold // Fallback to global
+}
+
+// shouldSendEmailAlert checks if email alerts are enabled for a user
+func (cm *CostMonitor) shouldSendEmailAlert(userID string) bool {
+	user, err := cm.app.Dao().FindRecordById("users", userID)
+	if err != nil {
+		return true // Default to enabled
+	}
+
+	prefs := user.Get("alertPreferences")
+	if prefs == nil {
+		return true // Default to enabled
+	}
+
+	// Try to extract emailEnabled from preferences
+	if prefsMap, ok := prefs.(map[string]interface{}); ok {
+		if emailEnabled, ok := prefsMap["emailEnabled"].(bool); ok {
+			return emailEnabled
+		}
+	}
+
+	return true // Default to enabled
+}
+
+// GetAlertsForDeployment retrieves all cost alerts for a specific deployment
+func (cm *CostMonitor) GetAlertsForDeployment(deploymentID string) ([]*CostAlert, error) {
+	records, err := cm.app.Dao().FindRecordsByFilter(
+		"costAlerts",
+		"deployment = {:deploymentId}",
+		"-created",
+		0,
+		0,
+		map[string]any{"deploymentId": deploymentID},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch alerts for deployment %s: %w", deploymentID, err)
+	}
+
+	alerts := make([]*CostAlert, len(records))
+	for i, record := range records {
+		alerts[i] = &CostAlert{
+			ID:           record.Id,
+			DeploymentID: record.GetString("deployment"),
+			UserID:       record.GetString("user"),
+			Type:         record.GetString("type"),
+			Threshold:    record.GetFloat("threshold"),
+			Triggered:    record.GetBool("triggered"),
+			ActualCost:   record.GetFloat("actualCost"),
+			EstimatedCost: record.GetFloat("estimatedCost"),
+			Variance:     record.GetFloat("variance"),
+			Message:      record.GetString("message"),
+			SentAt:       record.GetDateTime("sentAt").Time(),
+			Acknowledged: record.GetBool("acknowledged"),
+		}
+		record.UnmarshalJSONField("serviceBreakdown", &alerts[i].ServiceBreakdown)
+	}
+
+	return alerts, nil
+}
+
 // CheckCostAnomalies checks all active deployments for cost anomalies
-// Validates: AC-4.1 (Alert triggered when actual cost exceeds estimate by 20%)
-// Validates: AC-4.2 (Alert sent via email and in-app notification)
 func (cm *CostMonitor) CheckCostAnomalies() error {
 	log.Println("Starting cost anomaly detection for active deployments...")
 	
-	// Get all active deployments
 	deployments, err := cm.getActiveDeployments()
 	if err != nil {
 		return fmt.Errorf("failed to get active deployments: %w", err)
@@ -84,62 +174,45 @@ func (cm *CostMonitor) CheckCostAnomalies() error {
 	errorCount := 0
 	
 	for _, deployment := range deployments {
-		// Check if deployment is old enough for cost data
 		if time.Since(deployment.CreatedAt) < aws.CostExplorerDelay {
-			log.Printf("Skipping deployment %s: too new for cost data (age: %v)", 
-				deployment.ID, time.Since(deployment.CreatedAt).Round(time.Hour))
 			continue
 		}
 		
-		// Get actual cost data
 		actualCost, err := cm.getActualCost(deployment.ID)
 		if err != nil {
-			log.Printf("Warning: Could not get actual cost for deployment %s: %v", deployment.ID, err)
 			errorCount++
 			continue
 		}
 		
-		// Get estimate for comparison
 		estimate, err := cm.getEstimate(deployment.ID)
 		if err != nil {
-			log.Printf("Warning: Could not get estimate for deployment %s: %v", deployment.ID, err)
 			errorCount++
 			continue
 		}
 		
-		// Calculate variance
 		variance := cm.calculateVariance(actualCost.ProjectedMonthly, estimate.Total)
-		
-		// Get custom threshold for this deployment (if set)
 		threshold := cm.getDeploymentThreshold(deployment.ID)
 		
-		// Check if variance exceeds threshold
+		var alertType string
 		if variance > threshold {
-			log.Printf("Cost anomaly detected for deployment %s: %.1f%% over estimate (threshold: %.1f%%)", 
-				deployment.ID, variance, threshold)
-			
-			// Check if alert already exists and is not acknowledged
+			alertType = "SPIKE"
+		} else if variance < -threshold {
+			alertType = "DROP"
+		}
+		
+		if alertType != "" {
 			if cm.hasUnacknowledgedAlert(deployment.ID) {
-				log.Printf("Skipping alert for deployment %s: unacknowledged alert already exists", deployment.ID)
 				continue
 			}
 			
-			// Send cost alert
-			err := cm.sendCostAlert(deployment, actualCost, estimate, variance, threshold)
+			err := cm.sendCostAlert(deployment, actualCost, estimate, variance, threshold, alertType)
 			if err != nil {
-				log.Printf("Failed to send cost alert for deployment %s: %v", deployment.ID, err)
 				errorCount++
 				continue
 			}
-			
 			anomalyCount++
-		} else {
-			log.Printf("Deployment %s is within budget: %.1f%% variance (threshold: %.1f%%)", 
-				deployment.ID, variance, threshold)
 		}
 	}
-	
-	log.Printf("Cost anomaly detection completed: %d anomalies detected, %d errors", anomalyCount, errorCount)
 	
 	if errorCount > 0 {
 		return fmt.Errorf("completed with %d errors", errorCount)
@@ -148,115 +221,156 @@ func (cm *CostMonitor) CheckCostAnomalies() error {
 	return nil
 }
 
-// sendCostAlert creates and sends a cost alert
-// Validates: AC-4.2 (Alert sent via email and in-app notification)
-// Validates: AC-4.3 (Alert includes breakdown of which services exceeded budget)
+// sendCostAlert creates and sends a cost alert, enriched with an AI explanation
 func (cm *CostMonitor) sendCostAlert(
 	deployment DeploymentInfo,
 	actualCost *aws.ActualCostData,
 	estimate *EstimateData,
 	variance float64,
 	threshold float64,
+	alertType string,
 ) error {
-	// Create alert record
+	message := fmt.Sprintf("Deployment costs %.1f%% above estimate", variance)
+	if alertType == "DROP" {
+		message = fmt.Sprintf("Deployment costs dropped %.1f%% below estimate", -variance)
+	}
+
+	// Enrich alert with AI explanation (non-blocking — failure is logged, not fatal)
+	aiExplanation := ""
+	explainer := intelligence.NewAnomalyExplainer()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if explanation, err := explainer.ExplainAnomaly(ctx, deployment.Name, actualCost.Breakdown, variance); err != nil {
+		log.Printf("[CostMonitor] AI explanation failed for %s: %v", deployment.ID, err)
+	} else {
+		aiExplanation = explanation.Summary
+		if explanation.LikelyCause != "" {
+			aiExplanation += " Likely cause: " + explanation.LikelyCause
+		}
+	}
+
 	alert := CostAlert{
 		DeploymentID:     deployment.ID,
 		UserID:           deployment.UserID,
-		Type:             "cost_overrun",
+		Type:             alertType,
 		Threshold:        threshold,
 		Triggered:        true,
 		ActualCost:       actualCost.ProjectedMonthly,
 		EstimatedCost:    estimate.Total,
 		Variance:         variance,
-		Message:          fmt.Sprintf("Deployment costs %.1f%% above estimate", variance),
+		Message:          message,
 		ServiceBreakdown: actualCost.Breakdown,
 		SentAt:           time.Now(),
 		Acknowledged:     false,
 	}
-	
-	// Save alert to database
+
 	alertRecord, err := cm.saveAlert(alert)
 	if err != nil {
 		return fmt.Errorf("failed to save alert: %w", err)
 	}
-	
+
+	// Persist AI explanation on the alert record
+	if aiExplanation != "" {
+		alertRecord.Set("aiExplanation", aiExplanation)
+		if saveErr := cm.app.Dao().SaveRecord(alertRecord); saveErr != nil {
+			log.Printf("[CostMonitor] Failed to save AI explanation: %v", saveErr)
+		}
+	}
+
 	alert.ID = alertRecord.Id
-	
-	// Get user email for notification
-	userEmail, err := cm.getUserEmail(deployment.UserID)
-	if err != nil {
-		log.Printf("Warning: Could not get user email for deployment %s: %v", deployment.ID, err)
-		// Don't fail if we can't send email - alert is still saved
-		return nil
+
+	// Only send email if user has email notifications enabled
+	if cm.shouldSendEmailAlert(deployment.UserID) {
+		userEmail, err := cm.getUserEmail(deployment.UserID)
+		if err != nil {
+			log.Printf("Warning: Could not get user email for alert: %v", err)
+		} else {
+			alertData := &notifications.CostAlertData{
+				DeploymentID:       deployment.ID,
+				DeploymentName:     deployment.Name,
+				EstimatedCost:      estimate.Total,
+				ActualCost:         actualCost.ProjectedMonthly,
+				VariancePercentage: variance,
+			}
+			cm.notifier.SendCostAlert(userEmail, alertData)
+		}
 	}
-	
-	// Send email notification
-	// Validates: AC-4.2 (Alert sent via email)
-	alertData := &notifications.CostAlertData{
-		DeploymentID:       deployment.ID,
-		DeploymentName:     deployment.Name,
-		EstimatedCost:      estimate.Total,
-		ActualCost:         actualCost.ProjectedMonthly,
-		VariancePercentage: variance,
-	}
-	
-	err = cm.notifier.SendCostAlert(userEmail, alertData)
-	if err != nil {
-		log.Printf("Warning: Failed to send email alert for deployment %s: %v", deployment.ID, err)
-		// Don't fail if email fails - alert is still saved in database (in-app notification)
-	} else {
-		log.Printf("Cost alert email sent to %s for deployment %s", userEmail, deployment.ID)
-	}
-	
+
 	return nil
 }
 
-// getActiveDeployments retrieves all active deployments
+// getActiveDeployments retrieves all active deployments across all clouds
 func (cm *CostMonitor) getActiveDeployments() ([]DeploymentInfo, error) {
-	collection, err := cm.app.Dao().FindCollectionByNameOrId("deployments")
-	if err != nil {
-		return nil, fmt.Errorf("failed to find deployments collection: %w", err)
+	deployments := make([]DeploymentInfo, 0)
+
+	// AWS deployments
+	awsRecords, err := cm.app.Dao().FindRecordsByFilter("awsDeployments", "status = 'active' || status = 'running'", "-created", 0, 0, nil)
+	if err == nil {
+		for _, record := range awsRecords {
+			deployments = append(deployments, DeploymentInfo{
+				ID:        record.Id,
+				Name:      record.GetString("name"),
+				UserID:    record.GetString("user"),
+				Status:    record.GetString("status"),
+				CreatedAt: record.GetDateTime("created").Time(),
+			})
+		}
 	}
-	
-	// Find deployments with status "active" or "running"
-	records, err := cm.app.Dao().FindRecordsByFilter(
-		collection.Id,
-		"status = 'active' || status = 'running'",
-		"-created",
-		0,
-		0,
-		nil,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query active deployments: %w", err)
+
+	// Kubernetes deployments
+	k8sRecords, err := cm.app.Dao().FindRecordsByFilter("deployments", "status = 'active' || status = 'running'", "-created", 0, 0, nil)
+	if err == nil {
+		for _, record := range k8sRecords {
+			deployments = append(deployments, DeploymentInfo{
+				ID:        record.Id,
+				Name:      record.GetString("name"),
+				UserID:    record.GetString("user"),
+				Status:    record.GetString("status"),
+				CreatedAt: record.GetDateTime("created").Time(),
+			})
+		}
 	}
-	
-	deployments := make([]DeploymentInfo, 0, len(records))
-	for _, record := range records {
-		deployments = append(deployments, DeploymentInfo{
-			ID:        record.Id,
-			Name:      record.GetString("name"),
-			UserID:    record.GetString("user"),
-			Status:    record.GetString("status"),
-			CreatedAt: record.GetDateTime("created").Time(),
-		})
+
+	// GCP deployments (if collection exists)
+	gcpRecords, err := cm.app.Dao().FindRecordsByFilter("gcpDeployments", "status = 'active' || status = 'running'", "-created", 0, 0, nil)
+	if err == nil {
+		for _, record := range gcpRecords {
+			deployments = append(deployments, DeploymentInfo{
+				ID:        record.Id,
+				Name:      record.GetString("name"),
+				UserID:    record.GetString("user"),
+				Status:    record.GetString("status"),
+				CreatedAt: record.GetDateTime("created").Time(),
+			})
+		}
 	}
-	
+
+	// Azure deployments (if collection exists)
+	azureRecords, err := cm.app.Dao().FindRecordsByFilter("azureDeployments", "status = 'active' || status = 'running'", "-created", 0, 0, nil)
+	if err == nil {
+		for _, record := range azureRecords {
+			deployments = append(deployments, DeploymentInfo{
+				ID:        record.Id,
+				Name:      record.GetString("name"),
+				UserID:    record.GetString("user"),
+				Status:    record.GetString("status"),
+				CreatedAt: record.GetDateTime("created").Time(),
+			})
+		}
+	}
+
 	return deployments, nil
 }
 
-// getActualCost retrieves actual cost data for a deployment
+// getActualCost retrieves actual cost data
 func (cm *CostMonitor) getActualCost(deploymentID string) (*aws.ActualCostData, error) {
-	// Try to get cached actual cost first
 	actualCost, err := cm.costFetcher.GetCachedActualCost(deploymentID)
 	if err != nil {
-		// If no cached data, try to fetch fresh data
 		actualCost, err = cm.costFetcher.FetchActualCosts(deploymentID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch actual costs: %w", err)
 		}
 	}
-	
 	return actualCost, nil
 }
 
@@ -266,27 +380,19 @@ type EstimateData struct {
 	CreatedAt time.Time
 }
 
-// getEstimate retrieves cost estimate for a deployment
+// getEstimate retrieves cost estimate
 func (cm *CostMonitor) getEstimate(deploymentID string) (*EstimateData, error) {
-	record, err := cm.app.Dao().FindFirstRecordByFilter(
-		"costEstimates",
-		"deployment = {:deploymentId}",
-		map[string]any{
-			"deploymentId": deploymentID,
-		},
-	)
+	record, err := cm.app.Dao().FindFirstRecordByFilter("costEstimates", "deployment = {:deploymentId}", map[string]any{"deploymentId": deploymentID})
 	if err != nil {
 		return nil, fmt.Errorf("estimate not found: %w", err)
 	}
-	
 	return &EstimateData{
 		Total:     record.GetFloat("totalEstimate"),
 		CreatedAt: record.GetDateTime("created").Time(),
 	}, nil
 }
 
-// calculateVariance calculates the percentage variance between actual and estimated costs
-// Validates: AC-3.4 (Variance calculation)
+// calculateVariance calculates the percentage variance
 func (cm *CostMonitor) calculateVariance(actual, estimate float64) float64 {
 	if estimate == 0 {
 		return 0
@@ -294,52 +400,44 @@ func (cm *CostMonitor) calculateVariance(actual, estimate float64) float64 {
 	return ((actual - estimate) / estimate) * 100
 }
 
-// getDeploymentThreshold gets the custom alert threshold for a deployment
-// Validates: AC-4.4 (User can set custom alert thresholds per deployment)
+// getDeploymentThreshold gets the alert threshold for a deployment
+// Priority: 1) Deployment-specific threshold, 2) User preference, 3) Global default
 func (cm *CostMonitor) getDeploymentThreshold(deploymentID string) float64 {
-	// Try to get custom threshold from deployment settings
-	record, err := cm.app.Dao().FindFirstRecordByFilter(
-		"deployments",
-		"id = {:deploymentId}",
-		map[string]any{
-			"deploymentId": deploymentID,
-		},
-	)
+	// First, try to get deployment-specific threshold
+	record, err := cm.app.Dao().FindRecordById("awsDeployments", deploymentID)
 	if err != nil {
-		// Return default threshold if deployment not found
-		return cm.alertThreshold
+		record, err = cm.app.Dao().FindRecordById("deployments", deploymentID)
+	}
+
+	if err == nil {
+		customThreshold := record.GetFloat("costAlertThreshold")
+		if customThreshold > 0 {
+			return customThreshold
+		}
+		
+		// If no deployment-specific threshold, check user preferences
+		userID := record.GetString("user")
+		if userID != "" {
+			return cm.getUserAlertThreshold(userID)
+		}
 	}
 	
-	// Check if custom threshold is set
-	customThreshold := record.GetFloat("costAlertThreshold")
-	if customThreshold > 0 {
-		return customThreshold
-	}
-	
-	// Return default threshold
+	// Fallback to global default
 	return cm.alertThreshold
 }
 
-// hasUnacknowledgedAlert checks if there's an unacknowledged alert for a deployment
+// hasUnacknowledgedAlert checks for unacknowledged alerts
 func (cm *CostMonitor) hasUnacknowledgedAlert(deploymentID string) bool {
-	record, err := cm.app.Dao().FindFirstRecordByFilter(
-		"costAlerts",
-		"deployment = {:deploymentId} && acknowledged = false",
-		map[string]any{
-			"deploymentId": deploymentID,
-		},
-	)
-	
-	return err == nil && record != nil
+	record, _ := cm.app.Dao().FindFirstRecordByFilter("costAlerts", "deployment = {:deploymentId} && acknowledged = false", map[string]any{"deploymentId": deploymentID})
+	return record != nil
 }
 
-// saveAlert saves a cost alert to the database
+// saveAlert saves an alert
 func (cm *CostMonitor) saveAlert(alert CostAlert) (*models.Record, error) {
 	collection, err := cm.app.Dao().FindCollectionByNameOrId("costAlerts")
 	if err != nil {
-		return nil, fmt.Errorf("failed to find costAlerts collection: %w", err)
+		return nil, err
 	}
-	
 	record := models.NewRecord(collection)
 	record.Set("deployment", alert.DeploymentID)
 	record.Set("user", alert.UserID)
@@ -355,127 +453,27 @@ func (cm *CostMonitor) saveAlert(alert CostAlert) (*models.Record, error) {
 	record.Set("acknowledged", alert.Acknowledged)
 	
 	if err := cm.app.Dao().SaveRecord(record); err != nil {
-		return nil, fmt.Errorf("failed to save alert record: %w", err)
+		return nil, err
 	}
-	
 	return record, nil
 }
 
-// getUserEmail retrieves the email address for a user
+// getUserEmail retrieves the email address
 func (cm *CostMonitor) getUserEmail(userID string) (string, error) {
 	user, err := cm.app.Dao().FindRecordById("users", userID)
 	if err != nil {
-		return "", fmt.Errorf("user not found: %w", err)
+		return "", err
 	}
-	
-	email := user.GetString("email")
-	if email == "" {
-		return "", fmt.Errorf("user has no email address")
-	}
-	
-	return email, nil
-}
-
-// SetAlertThreshold sets the default alert threshold
-func (cm *CostMonitor) SetAlertThreshold(threshold float64) {
-	cm.alertThreshold = threshold
-}
-
-// GetAlertThreshold returns the default alert threshold
-func (cm *CostMonitor) GetAlertThreshold() float64 {
-	return cm.alertThreshold
+	return user.GetString("email"), nil
 }
 
 // AcknowledgeAlert marks an alert as acknowledged
 func (cm *CostMonitor) AcknowledgeAlert(alertID string) error {
 	alert, err := cm.app.Dao().FindRecordById("costAlerts", alertID)
 	if err != nil {
-		return fmt.Errorf("alert not found: %w", err)
+		return err
 	}
-	
 	alert.Set("acknowledged", true)
-	
-	if err := cm.app.Dao().SaveRecord(alert); err != nil {
-		return fmt.Errorf("failed to update alert: %w", err)
-	}
-	
-	return nil
-}
-
-// GetAlertsForDeployment retrieves all alerts for a deployment
-func (cm *CostMonitor) GetAlertsForDeployment(deploymentID string) ([]*CostAlert, error) {
-	records, err := cm.app.Dao().FindRecordsByFilter(
-		"costAlerts",
-		"deployment = {:deploymentId}",
-		"-created",
-		0,
-		0,
-		map[string]any{
-			"deploymentId": deploymentID,
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query alerts: %w", err)
-	}
-	
-	alerts := make([]*CostAlert, 0, len(records))
-	for _, record := range records {
-		alert := &CostAlert{
-			ID:               record.Id,
-			DeploymentID:     record.GetString("deployment"),
-			UserID:           record.GetString("user"),
-			Type:             record.GetString("type"),
-			Threshold:        record.GetFloat("threshold"),
-			Triggered:        record.GetBool("triggered"),
-			ActualCost:       record.GetFloat("actualCost"),
-			EstimatedCost:    record.GetFloat("estimatedCost"),
-			Variance:         record.GetFloat("variance"),
-			Message:          record.GetString("message"),
-			ServiceBreakdown: record.Get("serviceBreakdown").(map[string]float64),
-			SentAt:           record.GetDateTime("sentAt").Time(),
-			Acknowledged:     record.GetBool("acknowledged"),
-		}
-		alerts = append(alerts, alert)
-	}
-	
-	return alerts, nil
-}
-
-// GetAlertsForUser retrieves all alerts for a user
-func (cm *CostMonitor) GetAlertsForUser(userID string) ([]*CostAlert, error) {
-	records, err := cm.app.Dao().FindRecordsByFilter(
-		"costAlerts",
-		"user = {:userId}",
-		"-created",
-		0,
-		0,
-		map[string]any{
-			"userId": userID,
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query alerts: %w", err)
-	}
-	
-	alerts := make([]*CostAlert, 0, len(records))
-	for _, record := range records {
-		alert := &CostAlert{
-			ID:               record.Id,
-			DeploymentID:     record.GetString("deployment"),
-			UserID:           record.GetString("user"),
-			Type:             record.GetString("type"),
-			Threshold:        record.GetFloat("threshold"),
-			Triggered:        record.GetBool("triggered"),
-			ActualCost:       record.GetFloat("actualCost"),
-			EstimatedCost:    record.GetFloat("estimatedCost"),
-			Variance:         record.GetFloat("variance"),
-			Message:          record.GetString("message"),
-			ServiceBreakdown: record.Get("serviceBreakdown").(map[string]float64),
-			SentAt:           record.GetDateTime("sentAt").Time(),
-			Acknowledged:     record.GetBool("acknowledged"),
-		}
-		alerts = append(alerts, alert)
-	}
-	
-	return alerts, nil
+	alert.Set("acknowledgedAt", time.Now())
+	return cm.app.Dao().SaveRecord(alert)
 }

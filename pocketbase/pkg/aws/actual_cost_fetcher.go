@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/notifications"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/costexplorer"
@@ -22,7 +23,7 @@ const (
 	DefaultGranularity = types.GranularityDaily
 	
 	// Deployment tag key used for cost tracking
-	DeploymentTagKey = "autostack:deployment"
+	DeploymentTagKey = "DeploymentId"
 )
 
 // CostExplorerClientInterface defines the interface for AWS Cost Explorer client
@@ -37,6 +38,7 @@ type ActualCostFetcher struct {
 	retry          *RetryManager
 	circuitBreaker *CircuitBreaker
 	errorStats     *ErrorStats
+	alertManager   *AlertManager
 }
 
 // ActualCostData represents actual cost data from AWS Cost Explorer
@@ -57,7 +59,7 @@ type CostPeriod struct {
 }
 
 // NewActualCostFetcher creates a new actual cost fetcher instance
-func NewActualCostFetcher(app core.App) (*ActualCostFetcher, error) {
+func NewActualCostFetcher(app core.App, emailService *notifications.EmailService) (*ActualCostFetcher, error) {
 	// Load AWS config
 	cfg, err := config.LoadDefaultConfig(context.TODO())
 	if err != nil {
@@ -75,6 +77,7 @@ func NewActualCostFetcher(app core.App) (*ActualCostFetcher, error) {
 		retry:          retryManager,
 		circuitBreaker: circuitBreaker,
 		errorStats:     errorStats,
+		alertManager:   NewAlertManager(app, emailService),
 	}, nil
 }
 
@@ -157,6 +160,13 @@ func (acf *ActualCostFetcher) FetchActualCosts(deploymentID string) (*ActualCost
 	// Save actual cost data to database
 	if err := acf.saveActualCost(actualCost); err != nil {
 		return nil, fmt.Errorf("failed to save actual cost: %w", err)
+	}
+
+	// Check for threshold violations
+	if acf.alertManager != nil {
+		if err := acf.alertManager.CheckCostThresholds(deploymentID, actualCost); err != nil {
+			log.Printf("Warning: Failed to check cost thresholds for deployment %s: %v", deploymentID, err)
+		}
 	}
 
 	return actualCost, nil
@@ -415,7 +425,7 @@ func (acf *ActualCostFetcher) mergeBreakdowns(existing, new map[string]float64) 
 
 // getDeployment retrieves deployment record from database
 func (acf *ActualCostFetcher) getDeployment(deploymentID string) (*models.Record, error) {
-	deployment, err := acf.app.Dao().FindRecordById("deployments", deploymentID)
+	deployment, err := acf.app.Dao().FindRecordById("awsDeployments", deploymentID)
 	if err != nil {
 		return nil, fmt.Errorf("deployment not found: %w", err)
 	}
@@ -494,7 +504,20 @@ func (acf *ActualCostFetcher) GetCachedActualCost(deploymentID string) (*ActualC
 		CostToDate:       record.GetFloat("costToDate"),
 		ProjectedMonthly: record.GetFloat("projectedMonthly"),
 		Variance:         record.GetFloat("variance"),
-		Breakdown:        record.Get("breakdown").(map[string]float64),
+		Breakdown:        func() map[string]float64 {
+			res := make(map[string]float64)
+			breakdownData := record.Get("breakdown")
+			if breakdownMap, ok := breakdownData.(map[string]interface{}); ok {
+				for k, v := range breakdownMap {
+					if f, ok := v.(float64); ok {
+						res[k] = f
+					} else if i, ok := v.(int); ok {
+						res[k] = float64(i)
+					}
+				}
+			}
+			return res
+		}(),
 		Period: CostPeriod{
 			Start: record.GetDateTime("periodStart").Time(),
 			End:   record.GetDateTime("periodEnd").Time(),
@@ -507,7 +530,7 @@ func (acf *ActualCostFetcher) GetCachedActualCost(deploymentID string) (*ActualC
 func (acf *ActualCostFetcher) FetchActualCostsForActiveDeployments() error {
 	// Get all active deployments
 	deployments, err := acf.app.Dao().FindRecordsByFilter(
-		"deployments",
+		"awsDeployments",
 		"status = 'active'",
 		"-created",
 		0,

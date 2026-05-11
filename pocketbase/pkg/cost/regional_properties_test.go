@@ -17,6 +17,7 @@ func TestRegionalPricingConsistencyProperty(t *testing.T) {
 	// Create a test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 	
 	mapper := NewBlueprintMapper(app)
 
@@ -166,6 +167,7 @@ func TestRegionalPricingConsistencyProperty(t *testing.T) {
 func TestRegionalPricingDeterminism(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	testCases := []struct {
 		name          string
@@ -249,6 +251,7 @@ func TestRegionalPricingDeterminism(t *testing.T) {
 func TestRegionalPricingIdempotency(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 	
 	mapper := NewBlueprintMapper(app)
 
@@ -291,6 +294,7 @@ func TestRegionalPricingIdempotency(t *testing.T) {
 func TestRegionalPricingConcurrency(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 	
 	mapper := NewBlueprintMapper(app)
 

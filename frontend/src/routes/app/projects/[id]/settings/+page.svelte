@@ -12,6 +12,8 @@
   import { Badge, Button, Heading, Input, Label, Modal, P } from "flowbite-svelte";
   import { Image, Tag, Trash, XIcon } from "lucide-svelte";
   import toast from "svelte-french-toast";
+  import ProjectMembers from "$lib/components/projects/ProjectMembers.svelte";
+  import WebhookSettings from "$lib/components/projects/WebhookSettings.svelte";
 
   let localTags: Set<string> = new Set();
   let initialLoad = true;
@@ -19,6 +21,7 @@
   let inFocus = false;
   let modalDeleteOpen = false;
   let avatar: File;
+  let userRole: string = "viewer"; // Default role
 
   $: {
     // update tags
@@ -174,6 +177,22 @@
       })
       .catch((error) => {
         toast.error(error.message);
+
+  let userRole: string = "viewer";
+
+  async function fetchUserRole() {
+    if (!$selectedProject || !client.authStore.model) return;
+    try {
+      const record = await client.collection("project_members").getFirstListItem(
+        `project = "${$selectedProject.id}" && user = "${client.authStore.model.id}"`
+      );
+      userRole = record.role;
+    } catch (err) {
+      console.error("Error fetching user role:", err);
+    }
+  }
+
+  $: $selectedProject && fetchUserRole();
       });
   }
 </script>
@@ -260,6 +279,14 @@
         class="w-full border-gray-300 border-2"
         on:change={handleAvatarUpload}
       />
+
+  <hr class="border-gray-700 my-8" />
+
+  <ProjectMembers projectId={$selectedProject?.id || ''} {userRole} />
+
+  <hr class="border-gray-700 my-8" />
+
+  <WebhookSettings projectId={$selectedProject?.id || ''} {userRole} />
     </label>
   </div>
 </div>

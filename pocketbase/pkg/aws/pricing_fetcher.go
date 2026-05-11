@@ -226,25 +226,31 @@ func (pf *PricingFetcher) GetCachedPricing(region, service, productFamily, insta
 	}, nil
 }
 
-// IsDataStale checks if pricing data is older than the specified duration
+// IsDataStale checks if pricing data is older than the specified duration.
+// Returns (true, error) if no data exists, (true/false, nil) otherwise.
 func (pf *PricingFetcher) IsDataStale(maxAge time.Duration) (bool, error) {
+	// PocketBase requires a non-empty filter expression.
+	// "id != ''" matches all records, equivalent to no filter.
 	records, err := pf.app.Dao().FindRecordsByFilter(
 		"awsPricingCache",
-		"",
-		"-fetchedAt", // Order by fetchedAt descending to get most recent
+		"id != ''",
+		"-fetchedAt", // Most-recently fetched record first
 		1,
 		0,
 		nil,
 	)
-	if err != nil || len(records) == 0 {
+	if err != nil {
 		return true, fmt.Errorf("no pricing data found: %w", err)
 	}
-	
-	record := records[0]
+	if len(records) == 0 {
+		return true, fmt.Errorf("no pricing data found: cache is empty")
+	}
 
+	record := records[0]
 	fetchedAt := record.GetDateTime("fetchedAt")
 	return time.Since(fetchedAt.Time()) > maxAge, nil
 }
+
 
 // fetchCloudFrontRates fetches CloudFront pricing data
 func (pf *PricingFetcher) fetchCloudFrontRates() error {

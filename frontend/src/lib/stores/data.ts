@@ -13,6 +13,8 @@ import type { RolloutStatusResponse } from "$lib/types/status";
 import { getRolloutStatus } from "$lib/api/rollouts";
 import selectedProjectId from "./project";
 import selectedDeploymentId from "./deployment";
+import type { DeploymentHealth } from "$lib/types/health";
+import { getHealthSummary } from "$lib/api/health";
 
 // Generic type for expandable responses
 export type ExpandableResponse<T, U> = T & { expand?: U };
@@ -77,6 +79,9 @@ export const autoUpdates = createWritableStore<ExpandableResponse<AutoUpdatesRes
 
 // Cluster Info
 export const clusterInfo = createWritableStore<ClusterInfoResponse | undefined>(undefined);
+
+// Health
+export const healthSummary = createWritableStore<DeploymentHealth[]>([]);
 
 export enum UpdateFilterEnum {
     ALL = "all"
@@ -179,10 +184,16 @@ export async function updateDataStores(filter: UpdateFilter = { filter: UpdateFi
             "project,deployment"
         );
         await updateClusterInfo();
+        await updateHealthSummary();
     }
 
     // wait for all stores to be updated
     loading.set(false);
+}
+
+export async function updateHealthSummary() {
+    const response = await getHealthSummary();
+    healthSummary.set(response);
 }
 
 export async function updateCurrentRolloutStatus() {

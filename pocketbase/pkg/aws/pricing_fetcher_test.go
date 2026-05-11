@@ -23,10 +23,26 @@ func (m *MockPricingClient) GetProducts(ctx context.Context, params *pricing.Get
 	return &pricing.GetProductsOutput{}, nil
 }
 
-// createMockPricingFetcher creates a pricing fetcher with a mock client
+// createMockPricingFetcher creates a pricing fetcher with a mock client and an
+// in-memory PocketBase test app that has the awsPricingCache collection seeded.
+//
+// Tests in this package are integration tests that exercise real DB round-trips
+// against an in-memory SQLite instance. The collection schema must be bootstrapped
+// here because tests.NewTestApp() starts with a blank schema (no migrations).
 func createMockPricingFetcher(t *testing.T, mockClient *MockPricingClient) *PricingFetcher {
-	app, _ := tests.NewTestApp()
+	t.Helper()
+
+	app, err := tests.NewTestApp()
+	if err != nil {
+		t.Fatalf("failed to create test app: %v", err)
+	}
 	t.Cleanup(func() { app.Cleanup() })
+
+	// Bootstrap the awsPricingCache collection schema into the blank test DB.
+	// This mirrors what the production JS migration does.
+	if err := bootstrapPricingCacheCollection(app); err != nil {
+		t.Fatalf("failed to bootstrap awsPricingCache collection: %v", err)
+	}
 
 	pf := &PricingFetcher{
 		app:       app,
@@ -37,6 +53,7 @@ func createMockPricingFetcher(t *testing.T, mockClient *MockPricingClient) *Pric
 
 	return pf
 }
+
 
 func TestPricingFetcher_FetchFargateRates(t *testing.T) {
 	mockClient := &MockPricingClient{
@@ -78,10 +95,12 @@ func TestPricingFetcher_FetchFargateRates(t *testing.T) {
 		t.Errorf("fetchFargateRates() failed: %v", err)
 	}
 
-	// Verify data was saved to database
+	// Verify data was saved to database.
+	// Use t.Fatalf (not t.Errorf) so the test stops here if GetFargateRates fails —
+	// continuing past a nil `rates` would panic.
 	rates, err := pf.GetFargateRates("us-east-1")
 	if err != nil {
-		t.Errorf("GetFargateRates() failed: %v", err)
+		t.Fatalf("GetFargateRates() failed: %v", err)
 	}
 
 	if rates.VCPUPricePerHour != 0.04048 {
@@ -123,10 +142,10 @@ func TestPricingFetcher_FetchS3Rates(t *testing.T) {
 		t.Errorf("fetchS3Rates() failed: %v", err)
 	}
 
-	// Verify data was saved to database
+	// Verify data was saved to database.
 	storageRate, err := pf.GetS3StorageRates("us-east-1")
 	if err != nil {
-		t.Errorf("GetS3StorageRates() failed: %v", err)
+		t.Fatalf("GetS3StorageRates() failed: %v", err)
 	}
 
 	if storageRate <= 0 {
@@ -168,10 +187,10 @@ func TestPricingFetcher_FetchALBRates(t *testing.T) {
 		t.Errorf("fetchALBRates() failed: %v", err)
 	}
 
-	// Verify data was saved to database
+	// Verify data was saved to database.
 	rates, err := pf.GetALBRates("us-east-1")
 	if err != nil {
-		t.Errorf("GetALBRates() failed: %v", err)
+		t.Fatalf("GetALBRates() failed: %v", err)
 	}
 
 	if rates.HourlyRate != 0.0225 {
@@ -213,10 +232,10 @@ func TestPricingFetcher_FetchRDSRates(t *testing.T) {
 		t.Errorf("fetchRDSRates() failed: %v", err)
 	}
 
-	// Verify data was saved to database
+	// Verify data was saved to database.
 	instanceRate, err := pf.GetRDSInstanceRates("us-east-1", "db.t3.micro", "MySQL")
 	if err != nil {
-		t.Errorf("GetRDSInstanceRates() failed: %v", err)
+		t.Fatalf("GetRDSInstanceRates() failed: %v", err)
 	}
 
 	if instanceRate != 0.017 {

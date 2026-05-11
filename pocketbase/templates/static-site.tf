@@ -15,6 +15,12 @@ variable "domain_name" {
   default     = ""
 }
 
+variable "route53_zone_id" {
+  description = "Route53 zone ID for the custom domain"
+  type        = string
+  default     = ""
+}
+
 variable "user_id" {
   description = "User ID for resource tagging"
   type        = string
@@ -42,18 +48,38 @@ terraform {
 
 provider "aws" {
   region = var.region
+  default_tags {
+    tags = {
+      ManagedBy    = "AutoStack"
+      UserId       = var.user_id
+      ProjectId    = var.project_id
+      DeploymentId = var.deployment_id
+      Environment  = "production"
+    }
+  }
+}
+
+# CloudFront certificates must be in us-east-1
+provider "aws" {
+  alias  = "us_east_1"
+  region = "us-east-1"
+  default_tags {
+    tags = {
+      ManagedBy    = "AutoStack"
+      UserId       = var.user_id
+      ProjectId    = var.project_id
+      DeploymentId = var.deployment_id
+      Environment  = "production"
+    }
+  }
 }
 
 # S3 Bucket for website hosting
 resource "aws_s3_bucket" "website" {
   bucket = "${var.app_name}-${random_id.bucket_suffix.hex}"
-  
+
   tags = {
-    Name         = "${var.app_name}-website"
-    ManagedBy    = "AutoStack"
-    UserId       = var.user_id
-    ProjectId    = var.project_id
-    DeploymentId = var.deployment_id
+    Name = "${var.app_name}-website"
   }
 }
 
@@ -99,8 +125,8 @@ resource "aws_s3_bucket_policy" "website" {
     Version = "2012-10-17"
     Statement = [
       {
-        Sid       = "AllowCloudFrontServicePrincipal"
-        Effect    = "Allow"
+        Sid    = "AllowCloudFrontServicePrincipal"
+        Effect = "Allow"
         Principal = {
           Service = "cloudfront.amazonaws.com"
         }
@@ -180,43 +206,69 @@ resource "aws_cloudfront_distribution" "website" {
 
   viewer_certificate {
     cloudfront_default_certificate = var.domain_name == ""
-    
-    dynamic "acm_certificate_arn" {
-      for_each = var.domain_name != "" ? [1] : []
-      content {
-        acm_certificate_arn = aws_acm_certificate.website[0].arn
-      }
-    }
-    
-    ssl_support_method       = var.domain_name != "" ? "sni-only" : null
-    minimum_protocol_version = var.domain_name != "" ? "TLSv1.2_2021" : null
+    acm_certificate_arn            = var.domain_name != "" ? aws_acm_certificate_validation.website[0].certificate_arn : null
+    ssl_support_method             = var.domain_name != "" ? "sni-only" : null
+    minimum_protocol_version       = var.domain_name != "" ? "TLSv1.2_2021" : null
   }
 
   tags = {
-    Name         = "${var.app_name}-cloudfront"
-    ManagedBy    = "AutoStack"
-    UserId       = var.user_id
-    ProjectId    = var.project_id
-    DeploymentId = var.deployment_id
+    Name = "${var.app_name}-cloudfront"
   }
 }
 
 # SSL Certificate (only if custom domain is provided)
 resource "aws_acm_certificate" "website" {
-  count           = var.domain_name != "" ? 1 : 0
-  domain_name     = var.domain_name
+  count             = var.domain_name != "" ? 1 : 0
+  provider          = aws.us_east_1
+  domain_name       = var.domain_name
   validation_method = "DNS"
 
   tags = {
-    Name         = "${var.app_name}-cert"
-    ManagedBy    = "AutoStack"
-    UserId       = var.user_id
-    ProjectId    = var.project_id
-    DeploymentId = var.deployment_id
+    Name = "${var.app_name}-cert"
   }
 
   lifecycle {
     create_before_destroy = true
+  }
+}
+
+# DNS Validation Record
+resource "aws_route53_record" "validation" {
+  for_each = var.domain_name != "" ? {
+    for dvo in aws_acm_certificate.website[0].domain_validation_options : dvo.domain_name => {
+      name   = dvo.resource_record_name
+      record = dvo.resource_record_value
+      type   = dvo.resource_record_type
+    }
+  } : {}
+
+  allow_overwrite = true
+  name            = each.value.name
+  records         = [each.value.record]
+  ttl             = 60
+  type            = each.value.type
+  zone_id         = var.route53_zone_id
+}
+
+# Certificate Validation
+resource "aws_acm_certificate_validation" "website" {
+  count                   = var.domain_name != "" ? 1 : 0
+  provider                = aws.us_east_1
+  certificate_arn         = aws_acm_certificate.website[0].arn
+  validation_record_fqdns = [for record in aws_route53_record.validation : record.fqdn]
+}
+
+# Route53 Alias Record for CloudFront
+resource "aws_route53_record" "website" {
+  count   = var.domain_name != "" ? 1 : 0
+  zone_id = var.route53_zone_id
+  name    = var.domain_name
+  type    = "A"
+
+  alias {
+    name                   = aws_cloudfront_distribution.website.domain_name
+    zone_id                = aws_cloudfront_distribution.website.hosted_zone_id
+    evaluate_target_health = false
   }
 }
 
@@ -225,7 +277,7 @@ resource "aws_s3_object" "index" {
   bucket       = aws_s3_bucket.website.id
   key          = "index.html"
   content_type = "text/html"
-  
+
   content = <<EOF
 <!DOCTYPE html>
 <html lang="en">
@@ -277,11 +329,7 @@ resource "aws_s3_object" "index" {
 EOF
 
   tags = {
-    Name         = "${var.app_name}-index"
-    ManagedBy    = "AutoStack"
-    UserId       = var.user_id
-    ProjectId    = var.project_id
-    DeploymentId = var.deployment_id
+    Name = "${var.app_name}-index"
   }
 }
 
@@ -290,7 +338,7 @@ resource "aws_s3_object" "error" {
   bucket       = aws_s3_bucket.website.id
   key          = "error.html"
   content_type = "text/html"
-  
+
   content = <<EOF
 <!DOCTYPE html>
 <html lang="en">
@@ -335,18 +383,14 @@ resource "aws_s3_object" "error" {
 EOF
 
   tags = {
-    Name         = "${var.app_name}-error"
-    ManagedBy    = "AutoStack"
-    UserId       = var.user_id
-    ProjectId    = var.project_id
-    DeploymentId = var.deployment_id
+    Name = "${var.app_name}-error"
   }
 }
 
 # Outputs
 output "website_url" {
   description = "Website URL"
-  value       = "https://${aws_cloudfront_distribution.website.domain_name}"
+  value       = var.domain_name != "" ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.website.domain_name}"
 }
 
 output "custom_domain_url" {

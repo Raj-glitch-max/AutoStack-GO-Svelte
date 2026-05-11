@@ -9,6 +9,9 @@
   import { Badge, Button, Indicator, Tooltip } from "flowbite-svelte";
   import { ArrowRight, FileQuestion, Tag } from "lucide-svelte";
   import { getTagColor } from "$lib/utils/tags";
+  import { healthSummary } from "$lib/stores/data";
+  import type { HealthStatus } from "$lib/types/health";
+  import { Activity } from "lucide-svelte";
   export let project: ProjectsResponse;
 
   let tags: Set<string> = new Set();
@@ -19,6 +22,36 @@
   // filter $rollouts by $rollouts.expand.project
   let these_rollouts: RolloutsResponse<Rexpand>[] = [];
   $: these_rollouts = $rollouts.filter((r) => r.expand?.project.id === project.id);
+
+  // Aggregated health for the project
+  let projectHealth: HealthStatus = 'unknown';
+  $: {
+    const projectDeployments = $deployments.filter(d => d.project === project.id);
+    const deploymentIds = new Set(projectDeployments.map(d => d.id));
+    const projectHealths = $healthSummary.filter(h => deploymentIds.has(h.deploymentId));
+    
+    if (projectHealths.length > 0) {
+      if (projectHealths.some(h => h.overallStatus === 'unhealthy')) {
+        projectHealth = 'unhealthy';
+      } else if (projectHealths.some(h => h.overallStatus === 'degraded')) {
+        projectHealth = 'degraded';
+      } else if (projectHealths.some(h => h.overallStatus === 'pending')) {
+        projectHealth = 'pending';
+      } else if (projectHealths.every(h => h.overallStatus === 'healthy')) {
+        projectHealth = 'healthy';
+      }
+    }
+  }
+
+  function getHealthColor(status: HealthStatus) {
+    switch (status) {
+      case 'healthy': return 'bg-green-500';
+      case 'unhealthy': return 'bg-red-500';
+      case 'pending': return 'bg-yellow-500';
+      case 'degraded': return 'bg-orange-500';
+      default: return 'bg-gray-400';
+    }
+  }
 </script>
 
 <div class="rounded-xl border border-gray-200 ov">
@@ -42,7 +75,15 @@
       </Indicator>
       <Tooltip>Deployments</Tooltip>
     </div>
-    <div class="text-sm font-medium leading-6">{project.name}</div>
+    <div class="flex flex-col min-w-0 flex-1">
+      <div class="text-sm font-medium leading-6 truncate flex items-center">
+        {project.name}
+        <div class="ml-2 flex items-center">
+          <div class="w-2 h-2 rounded-full {getHealthColor(projectHealth)} shadow-[0_0_8px_rgba(0,0,0,0.1)] transition-colors duration-500"></div>
+          <Tooltip>Project Health: {projectHealth}</Tooltip>
+        </div>
+      </div>
+    </div>
     <div class="relative ml-auto">
       <div class="flex justify-end">
         <Button

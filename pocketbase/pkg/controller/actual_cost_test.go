@@ -21,8 +21,9 @@ import (
 func TestGetActualCost_DeploymentNotFound(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
@@ -56,8 +57,9 @@ func TestGetActualCost_DeploymentNotFound(t *testing.T) {
 func TestGetActualCost_MissingDeploymentID(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
@@ -91,6 +93,7 @@ func TestGetActualCost_MissingDeploymentID(t *testing.T) {
 func TestGetActualCost_DeploymentTooNew(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a test deployment that's less than 48 hours old
 	collection, err := app.Dao().FindCollectionByNameOrId("deployments")
@@ -107,7 +110,7 @@ func TestGetActualCost_DeploymentTooNew(t *testing.T) {
 		t.Fatalf("Failed to save deployment: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
@@ -145,6 +148,7 @@ func TestGetActualCost_DeploymentTooNew(t *testing.T) {
 func TestGetActualCost_WithCachedData(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a test deployment that's old enough
 	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("deployments")
@@ -201,7 +205,7 @@ func TestGetActualCost_WithCachedData(t *testing.T) {
 		t.Fatalf("Failed to save estimate: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
@@ -263,6 +267,7 @@ func TestGetActualCost_WithCachedData(t *testing.T) {
 func TestGetActualCost_WithoutEstimate(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a test deployment without an estimate
 	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("deployments")
@@ -301,7 +306,7 @@ func TestGetActualCost_WithoutEstimate(t *testing.T) {
 		t.Fatalf("Failed to save actual cost: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
@@ -341,6 +346,7 @@ func TestGetActualCost_WithoutEstimate(t *testing.T) {
 func TestRefreshActualCost_Success(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a test deployment
 	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("deployments")
@@ -357,7 +363,7 @@ func TestRefreshActualCost_Success(t *testing.T) {
 		t.Fatalf("Failed to save deployment: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
@@ -384,8 +390,9 @@ func TestRefreshActualCost_Success(t *testing.T) {
 func TestGetHealthStatus(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
@@ -479,9 +486,10 @@ func TestActualCostResponse_JSONSerialization(t *testing.T) {
 func TestAuthorization_GetActualCost_NoAuth(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a test deployment
-	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("deployments")
+	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("awsDeployments")
 	if err != nil {
 		t.Skip("Deployments collection not found, skipping authorization test")
 	}
@@ -496,16 +504,16 @@ func TestAuthorization_GetActualCost_NoAuth(t *testing.T) {
 		t.Fatalf("Failed to save deployment: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/cost/actual/"+deployment.Id, nil)
-	req.SetPathValue("deploymentId", deployment.Id)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
+	c.SetPathParams(echo.PathParams{{Name: "deploymentId", Value: deployment.Id}})
 	// No auth record set in context
 
 	err = controller.GetActualCost(c)
@@ -531,6 +539,7 @@ func TestAuthorization_GetActualCost_NoAuth(t *testing.T) {
 func TestAuthorization_GetActualCost_WrongUser(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a mock user record
 	usersCollection, err := app.Dao().FindCollectionByNameOrId("users")
@@ -542,7 +551,7 @@ func TestAuthorization_GetActualCost_WrongUser(t *testing.T) {
 	mockUser.Id = "user-123"
 
 	// Create a deployment owned by a different user
-	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("deployments")
+	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("awsDeployments")
 	if err != nil {
 		t.Skip("Deployments collection not found, skipping authorization test")
 	}
@@ -557,16 +566,16 @@ func TestAuthorization_GetActualCost_WrongUser(t *testing.T) {
 		t.Fatalf("Failed to save deployment: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/cost/actual/"+deployment.Id, nil)
-	req.SetPathValue("deploymentId", deployment.Id)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
+	c.SetPathParams(echo.PathParams{{Name: "deploymentId", Value: deployment.Id}})
 	c.Set(apis.ContextAuthRecordKey, mockUser) // Set different user
 
 	err = controller.GetActualCost(c)
@@ -592,6 +601,7 @@ func TestAuthorization_GetActualCost_WrongUser(t *testing.T) {
 func TestAuthorization_GetActualCost_CorrectUser(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a mock user record
 	usersCollection, err := app.Dao().FindCollectionByNameOrId("users")
@@ -618,16 +628,16 @@ func TestAuthorization_GetActualCost_CorrectUser(t *testing.T) {
 		t.Fatalf("Failed to save deployment: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/cost/actual/"+deployment.Id, nil)
-	req.SetPathValue("deploymentId", deployment.Id)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
+	c.SetPathParams(echo.PathParams{{Name: "deploymentId", Value: deployment.Id}})
 	c.Set(apis.ContextAuthRecordKey, mockUser) // Set same user
 
 	err = controller.GetActualCost(c)
@@ -650,9 +660,10 @@ func TestAuthorization_GetActualCost_CorrectUser(t *testing.T) {
 func TestAuthorization_RefreshActualCost_NoAuth(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a test deployment
-	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("deployments")
+	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("awsDeployments")
 	if err != nil {
 		t.Skip("Deployments collection not found, skipping authorization test")
 	}
@@ -667,16 +678,16 @@ func TestAuthorization_RefreshActualCost_NoAuth(t *testing.T) {
 		t.Fatalf("Failed to save deployment: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/cost/actual/refresh/"+deployment.Id, nil)
-	req.SetPathValue("deploymentId", deployment.Id)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
+	c.SetPathParams(echo.PathParams{{Name: "deploymentId", Value: deployment.Id}})
 	// No auth record set in context
 
 	err = controller.RefreshActualCost(c)
@@ -702,6 +713,7 @@ func TestAuthorization_RefreshActualCost_NoAuth(t *testing.T) {
 func TestAuthorization_RefreshActualCost_WrongUser(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create a mock user record
 	usersCollection, err := app.Dao().FindCollectionByNameOrId("users")
@@ -713,7 +725,7 @@ func TestAuthorization_RefreshActualCost_WrongUser(t *testing.T) {
 	mockUser.Id = "user-123"
 
 	// Create a deployment owned by a different user
-	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("deployments")
+	deploymentCollection, err := app.Dao().FindCollectionByNameOrId("awsDeployments")
 	if err != nil {
 		t.Skip("Deployments collection not found, skipping authorization test")
 	}
@@ -728,16 +740,16 @@ func TestAuthorization_RefreshActualCost_WrongUser(t *testing.T) {
 		t.Fatalf("Failed to save deployment: %v", err)
 	}
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/cost/actual/refresh/"+deployment.Id, nil)
-	req.SetPathValue("deploymentId", deployment.Id)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
+	c.SetPathParams(echo.PathParams{{Name: "deploymentId", Value: deployment.Id}})
 	c.Set(apis.ContextAuthRecordKey, mockUser) // Set different user
 
 	err = controller.RefreshActualCost(c)
@@ -763,17 +775,18 @@ func TestAuthorization_RefreshActualCost_WrongUser(t *testing.T) {
 func TestAuthorization_DeploymentNotFound(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
-	controller, err := NewActualCostController(app)
+	controller, err := NewActualCostController(app, nil)
 	if err != nil {
 		t.Fatalf("Failed to create controller: %v", err)
 	}
 
 	e := echo.New()
 	req := httptest.NewRequest(http.MethodGet, "/api/cost/actual/nonexistent", nil)
-	req.SetPathValue("deploymentId", "nonexistent")
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
+	c.SetPathParams(echo.PathParams{{Name: "deploymentId", Value: "nonexistent"}})
 
 	err = controller.GetActualCost(c)
 	if err != nil {
@@ -800,7 +813,7 @@ func TestAuthorization_DeploymentNotFound(t *testing.T) {
 // TestVarianceCalculation_EdgeCases tests variance calculation edge cases in the API response
 // Validates: AC-3.4 (Compares actual vs estimated with variance percentage)
 func TestVarianceCalculation_EdgeCases(t *testing.T) {
-	tests := []struct {
+	testCases := []struct {
 		name             string
 		actualCost       float64
 		estimatedCost    float64
@@ -865,7 +878,7 @@ func TestVarianceCalculation_EdgeCases(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create response with test data
 			response := ActualCostResponse{
@@ -914,7 +927,7 @@ func TestVarianceCalculation_EdgeCases(t *testing.T) {
 // TestVarianceCalculation_Rounding tests that variance is properly rounded to 2 decimal places
 // Validates: TR-2.4 (Round to 2 decimal places for display)
 func TestVarianceCalculation_Rounding(t *testing.T) {
-	tests := []struct {
+	testCases := []struct {
 		name             string
 		actualCost       float64
 		estimatedCost    float64
@@ -951,7 +964,7 @@ func TestVarianceCalculation_Rounding(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			// Calculate variance using the same formula as the implementation
 			variance := 0.0

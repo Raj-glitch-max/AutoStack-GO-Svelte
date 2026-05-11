@@ -1,7 +1,9 @@
 <script lang="ts">
   import { Button, Input, Label, Select } from "flowbite-svelte";
-  import { ArrowRight, Cloud, DollarSign } from "lucide-svelte";
+  import { ArrowRight, Cloud, DollarSign, Sparkles } from "lucide-svelte";
   import toast from "svelte-french-toast";
+  import DeploymentAdvisor from "$lib/components/intelligence/DeploymentAdvisor.svelte";
+  import { fade, slide } from "svelte/transition";
   
   export let modal: boolean;
   export let projectId: string;
@@ -12,6 +14,11 @@
   let containerImage = 'nginx:latest';
   let instanceType = '256';
   let estimatedCost = 0;
+  let customDomain = '';
+  let route53ZoneId = '';
+  let showAdvanced = false;
+  let useAI = false;
+  let aiRecommendation: any = null;
   
   const regions = [
     { value: 'us-east-1', name: 'US East (N. Virginia)' },
@@ -57,6 +64,21 @@
     const instance = instanceTypes.find(i => i.value === instanceType);
     estimatedCost = (blueprint?.baseCost || 0) + (instance?.cost || 0);
   }
+
+  function handleAIApply(event: CustomEvent) {
+    const rec = event.detail;
+    selectedBlueprint = rec.blueprint_id;
+    selectedRegion = rec.region;
+    
+    // Map instance size strings to values if needed
+    if (rec.instance_size.includes('0.25')) instanceType = '256';
+    else if (rec.instance_size.includes('0.5')) instanceType = '512';
+    else if (rec.instance_size.includes('1')) instanceType = '1024';
+    
+    aiRecommendation = rec;
+    useAI = false;
+    toast.success("AI recommendations applied!");
+  }
   
   async function handleCreateDeployment() {
     if (!deploymentName.trim()) {
@@ -83,7 +105,9 @@
           configuration: {
             container_image: containerImage,
             instance_type: instanceType,
-            app_name: deploymentName.toLowerCase().replace(/[^a-z0-9-]/g, '-')
+            app_name: deploymentName.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+            custom_domain: customDomain,
+            route53_zone_id: route53ZoneId
           }
         })
       });
@@ -110,14 +134,33 @@
   }
 </script>
 
-<div class="flex flex-col space-y-6">
-  <div class="flex items-center space-x-2">
-    <Cloud class="w-6 h-6 text-blue-600" />
-    <h3 class="text-xl font-medium text-gray-900 dark:text-white">
-      Deploy to AWS
-    </h3>
+<div class="space-y-6">
+  <div class="flex items-center justify-between">
+    <div class="flex items-center space-x-3">
+      <Cloud size={32} class="text-primary-600 dark:text-primary-400" />
+      <div>
+        <h3 class="text-xl font-bold dark:text-white">New AWS Deployment</h3>
+        <p class="text-sm text-gray-500 dark:text-gray-400">Launch production-grade infrastructure in minutes</p>
+      </div>
+    </div>
+    <Button 
+      outline={!useAI} 
+      color={useAI ? 'primary' : 'alternative'} 
+      size="xs" 
+      on:click={() => useAI = !useAI}
+    >
+      <Sparkles size={14} class="mr-1" />
+      {useAI ? 'Back to Manual' : 'Get AI Help'}
+    </Button>
   </div>
-  
+
+  {#if useAI}
+    <div transition:fade>
+      <DeploymentAdvisor on:apply={handleAIApply} />
+    </div>
+  {:else}
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6" transition:fade>
+      <div class="space-y-4">
   <!-- Deployment Name -->
   <Label class="space-y-2">
     <span>Deployment Name *</span>
@@ -197,6 +240,44 @@
       {/each}
     </Select>
   </Label>
+
+  <!-- Advanced Settings / Custom Domain -->
+  <div class="border-t dark:border-gray-700 pt-4 mt-4">
+    <button 
+      class="text-sm font-medium text-primary-600 hover:text-primary-700 flex items-center"
+      on:click={() => showAdvanced = !showAdvanced}
+    >
+      {showAdvanced ? 'Hide' : 'Show'} Advanced Settings (Custom Domain)
+    </button>
+    
+    {#if showAdvanced}
+      <div class="mt-4 space-y-4">
+        <Label class="space-y-2">
+          <span>Custom Domain (Optional)</span>
+          <Input
+            type="text"
+            placeholder="app.example.com"
+            bind:value={customDomain}
+          />
+          <p class="text-xs text-gray-500">
+            Automated SSL/TLS certificate will be provisioned.
+          </p>
+        </Label>
+        
+        <Label class="space-y-2">
+          <span>Route53 Hosted Zone ID</span>
+          <Input
+            type="text"
+            placeholder="Z0123456789ABCDEF"
+            bind:value={route53ZoneId}
+          />
+          <p class="text-xs text-gray-500">
+            Required for DNS validation and alias record.
+          </p>
+        </Label>
+      </div>
+    {/if}
+  </div>
   
   <!-- Cost Estimate -->
   <div class="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg p-4">
@@ -224,4 +305,7 @@
     Deploy to AWS
     <ArrowRight class="w-4 h-4 ml-2" />
   </Button>
+  </div>
+  </div>
+{/if}
 </div>

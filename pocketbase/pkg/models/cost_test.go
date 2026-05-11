@@ -204,7 +204,7 @@ func TestCostEstimateValidation(t *testing.T) {
 	record.Set("rangeMax", 79.31)
 	record.Set("pricingVersion", "2026-04-11")
 
-	if err := app.Dao().ValidateAndFillRecord(record, nil); err != nil {
+	if err := app.Dao().SaveRecord(record); err != nil {
 		t.Errorf("Valid cost estimate record should pass validation: %v", err)
 	}
 
@@ -249,7 +249,7 @@ func TestActualCostValidation(t *testing.T) {
 	record.Set("periodEnd", time.Now())
 	record.Set("fetchedAt", time.Now())
 
-	if err := app.Dao().ValidateAndFillRecord(record, nil); err != nil {
+	if err := app.Dao().SaveRecord(record); err != nil {
 		t.Errorf("Valid actual cost record should pass validation: %v", err)
 	}
 
@@ -264,7 +264,7 @@ func TestActualCostValidation(t *testing.T) {
 	// Test period consistency
 	periodStart := record.GetDateTime("periodStart")
 	periodEnd := record.GetDateTime("periodEnd")
-	if periodStart.After(periodEnd.Time()) {
+	if periodStart.Time().After(periodEnd.Time()) {
 		t.Error("Period start should be before period end")
 	}
 }

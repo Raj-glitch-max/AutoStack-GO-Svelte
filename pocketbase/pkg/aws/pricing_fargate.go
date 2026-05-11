@@ -22,10 +22,14 @@ type FargateRates struct {
 	MemoryPricePerMonth float64 `json:"memoryPricePerMonth"`
 }
 
-// fetchFargateRates fetches Fargate pricing data for all regions
+// fetchFargateRates fetches Fargate pricing data for all configured regions.
+// Individual region failures are logged and skipped (partial failure is OK).
+// Returns an error only if ALL regions fail — which indicates a systemic issue
+// (e.g. throttling, invalid credentials) rather than a region-specific problem.
 func (pf *PricingFetcher) fetchFargateRates() error {
 	log.Println("Fetching Fargate pricing data...")
 
+	successCount := 0
 	for _, region := range pf.regions {
 		log.Printf("Fetching Fargate rates for region: %s", region)
 
@@ -57,10 +61,18 @@ func (pf *PricingFetcher) fetchFargateRates() error {
 		}
 
 		log.Printf("Successfully saved Fargate rates for %s", region)
+		successCount++
+	}
+
+	// If every region failed, it is a systemic error (throttling, bad credentials, etc.)
+	// and the caller should be informed rather than silently returning nil.
+	if successCount == 0 && len(pf.regions) > 0 {
+		return fmt.Errorf("failed to fetch Fargate rates for all %d regions", len(pf.regions))
 	}
 
 	return nil
 }
+
 
 // fetchFargateVCPURates fetches vCPU pricing for Fargate
 func (pf *PricingFetcher) fetchFargateVCPURates(region string) (float64, error) {

@@ -17,6 +17,7 @@ func TestEstimateCost_Success(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -109,6 +110,7 @@ func TestEstimateCost_Success(t *testing.T) {
 func TestEstimateCost_MissingBlueprint(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -138,6 +140,7 @@ func TestEstimateCost_MissingBlueprint(t *testing.T) {
 func TestEstimateCost_MissingRegion(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -167,6 +170,7 @@ func TestEstimateCost_MissingRegion(t *testing.T) {
 func TestEstimateCost_UnsupportedBlueprint(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -197,6 +201,7 @@ func TestEstimateCost_UnsupportedBlueprint(t *testing.T) {
 func TestEstimateCost_PerformanceUnder500ms(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -233,6 +238,7 @@ func TestEstimateCost_PerformanceUnder500ms(t *testing.T) {
 func TestGetSupportedBlueprints(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -298,6 +304,7 @@ func TestGetSupportedBlueprints(t *testing.T) {
 func TestGetBlueprintDetails(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -348,6 +355,7 @@ func TestGetBlueprintDetails(t *testing.T) {
 func TestGetBlueprintDetails_NotFound(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -374,6 +382,7 @@ func TestGetBlueprintDetails_NotFound(t *testing.T) {
 func TestEstimateCost_AllBlueprints(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 
@@ -426,6 +435,7 @@ func TestEstimateCost_CacheHit(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -499,6 +509,7 @@ func TestEstimateCost_CachePerformance(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -550,6 +561,7 @@ func TestEstimateCost_DifferentVariablesCacheMiss(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -604,6 +616,7 @@ func TestInvalidateCache_Region(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -659,6 +672,7 @@ func TestInvalidateCache_Blueprint(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -714,6 +728,7 @@ func TestInvalidateCache_All(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -767,6 +782,7 @@ func TestGetCacheStats(t *testing.T) {
 	// Setup test app
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create controller
 	controller := NewCostEstimateController(app)
@@ -830,6 +846,7 @@ func TestGetCacheStats(t *testing.T) {
 func TestIntegration_AllBlueprintsAllRegions(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()
@@ -889,6 +906,7 @@ func TestIntegration_AllBlueprintsAllRegions(t *testing.T) {
 func TestIntegration_ResponseFormatValidation(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()
@@ -956,6 +974,7 @@ func TestIntegration_ResponseFormatValidation(t *testing.T) {
 func TestIntegration_PricingDataFreshness(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()
@@ -1015,6 +1034,7 @@ func TestIntegration_PricingDataFreshness(t *testing.T) {
 func TestIntegration_CacheBehavior(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()
@@ -1096,6 +1116,7 @@ func TestIntegration_CacheBehavior(t *testing.T) {
 func TestIntegration_DifferentRegionsPricing(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()
@@ -1147,6 +1168,7 @@ func TestIntegration_DifferentRegionsPricing(t *testing.T) {
 func TestIntegration_ErrorScenarios(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()
@@ -1238,6 +1260,7 @@ func TestIntegration_ErrorScenarios(t *testing.T) {
 func TestIntegration_PerformanceRequirement(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()
@@ -1294,6 +1317,7 @@ func TestIntegration_PerformanceRequirement(t *testing.T) {
 func TestIntegration_BreakdownCompleteness(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	controller := NewCostEstimateController(app)
 	e := echo.New()

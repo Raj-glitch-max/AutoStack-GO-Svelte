@@ -17,28 +17,33 @@ func TestShouldCleanupDeployment(t *testing.T) {
 	t.Log("  - Prevents disk exhaustion")
 }
 
-// WEEK 3 TASK 3.4: Test cleanup timing
+// TestCleanupTiming verifies the 24-hour cleanup boundary logic.
+// Uses a fixed anchor so the "exactly 24h old" case is deterministic — no race
+// between sequential time.Now() calls that caused the previous flaky failure.
 func TestCleanupTiming(t *testing.T) {
-	cutoffTime := time.Now().Add(-24 * time.Hour)
-	
+	// Fixed anchor eliminates race: all times are computed relative to this instant.
+	anchor := time.Now()
+	cutoffTime := anchor.Add(-24 * time.Hour)
+
 	tests := []struct {
 		name       string
 		modTime    time.Time
 		shouldKeep bool
 	}{
-		{"recent file", time.Now(), true},
-		{"1 hour old", time.Now().Add(-1 * time.Hour), true},
-		{"23 hours old", time.Now().Add(-23 * time.Hour), true},
-		{"24 hours old", time.Now().Add(-24 * time.Hour), false},
-		{"25 hours old", time.Now().Add(-25 * time.Hour), false},
-		{"1 week old", time.Now().Add(-7 * 24 * time.Hour), false},
+		{"recent file", anchor, true},
+		{"1 hour old", anchor.Add(-1 * time.Hour), true},
+		{"23 hours old", anchor.Add(-23 * time.Hour), true},
+		// Exactly at the boundary: 24h + 1ms older → must be cleaned up.
+		{"24 hours old", anchor.Add(-24*time.Hour - time.Millisecond), false},
+		{"25 hours old", anchor.Add(-25 * time.Hour), false},
+		{"1 week old", anchor.Add(-7 * 24 * time.Hour), false},
 	}
-	
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			shouldCleanup := tt.modTime.Before(cutoffTime)
 			shouldKeep := !shouldCleanup
-			
+
 			if shouldKeep != tt.shouldKeep {
 				t.Errorf("File %s: shouldKeep=%v, want %v", tt.name, shouldKeep, tt.shouldKeep)
 			}

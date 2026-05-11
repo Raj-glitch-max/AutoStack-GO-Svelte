@@ -29,11 +29,17 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
     -ldflags="-w -s -X main.Version=${APP_VERSION} -X main.Commit=${BUILD_COMMIT}" \
     -o /bin/autostack-server ./...
 
-# Stage 3: Final minimal image
-FROM gcr.io/distroless/static-debian12:nonroot
+# Stage 3: Final image
+FROM debian:bookworm-slim
 
-# Copy timezone data for scheduled jobs
-COPY --from=backend-builder /usr/share/zoneinfo /usr/share/zoneinfo
+RUN apt-get update && apt-get install -y ca-certificates curl unzip && rm -rf /var/lib/apt/lists/*
+
+# Install Terraform 1.9.5 (match what CI validates against)
+RUN curl -fsSL https://releases.hashicorp.com/terraform/1.9.5/terraform_1.9.5_linux_amd64.zip -o terraform.zip \
+    && unzip terraform.zip \
+    && mv terraform /usr/local/bin/ \
+    && rm terraform.zip \
+    && terraform --version
 
 # Copy the compiled binary
 COPY --from=backend-builder /bin/autostack-server /autostack-server
@@ -43,6 +49,9 @@ COPY --from=frontend-builder /app/frontend/build /pb_public
 
 # Copy migrations
 COPY --from=backend-builder /app/pocketbase/pb_migrations /pb_migrations
+
+# Copy templates
+COPY --from=backend-builder /app/pocketbase/templates /templates
 
 # PocketBase data directory — mount a persistent volume here in production
 VOLUME ["/pb_data"]

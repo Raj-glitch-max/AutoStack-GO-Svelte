@@ -9,6 +9,7 @@ import (
 func TestStaticWebsiteBlueprintCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewStaticWebsiteBlueprintCalculator(app)
 
@@ -121,6 +122,7 @@ func TestStaticWebsiteBlueprintCalculator(t *testing.T) {
 func TestWebAppBlueprintCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewWebAppBlueprintCalculator(app)
 
@@ -230,6 +232,7 @@ func TestWebAppBlueprintCalculator(t *testing.T) {
 func TestFullStackBlueprintCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewFullStackBlueprintCalculator(app)
 
@@ -486,6 +489,7 @@ func TestBlueprintCostPositivity(t *testing.T) {
 	// Property: All blueprint cost estimates must be positive numbers
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	t.Run("StaticWebsitePositivity", func(t *testing.T) {
 		calc := NewStaticWebsiteBlueprintCalculator(app)
@@ -519,6 +523,7 @@ func TestBlueprintRangeConsistency(t *testing.T) {
 	// Property: Cost ranges must satisfy min ≤ estimate ≤ max
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	t.Run("StaticWebsiteRange", func(t *testing.T) {
 		calc := NewStaticWebsiteBlueprintCalculator(app)
@@ -576,6 +581,7 @@ func TestBlueprintRangeConsistency(t *testing.T) {
 func TestMicroservicesBlueprintCalculator(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	calc := NewMicroservicesBlueprintCalculator(app)
 
@@ -849,6 +855,7 @@ func TestBlueprintRangeMargins(t *testing.T) {
 	// **Validates: Requirements TR-2.2** (Calculate range with 20% margin)
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	t.Run("StaticWebsiteRangeMargins", func(t *testing.T) {
 		calc := NewStaticWebsiteBlueprintCalculator(app)
@@ -966,6 +973,7 @@ func TestBlueprintBreakdownCompleteness(t *testing.T) {
 	// **Validates: Cost Calculation Property 4** (Service breakdown sums to total estimate)
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	t.Run("StaticWebsiteBreakdownSum", func(t *testing.T) {
 		calc := NewStaticWebsiteBlueprintCalculator(app)
@@ -1075,6 +1083,7 @@ func TestBlueprintDecimalRounding(t *testing.T) {
 	// **Validates: Requirements TR-2.4** (Round to 2 decimal places for display)
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	t.Run("StaticWebsiteRounding", func(t *testing.T) {
 		calc := NewStaticWebsiteBlueprintCalculator(app)

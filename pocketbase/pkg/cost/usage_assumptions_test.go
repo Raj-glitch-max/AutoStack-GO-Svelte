@@ -33,7 +33,7 @@ func TestNewUsageAssumptionsManager(t *testing.T) {
 func TestGetAssumptions(t *testing.T) {
 	manager := NewUsageAssumptionsManager()
 
-	tests := []struct {
+	testCases := []struct {
 		name          string
 		blueprintType string
 		expectError   bool
@@ -65,7 +65,7 @@ func TestGetAssumptions(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			assumptions, err := manager.GetAssumptions(tt.blueprintType)
 
@@ -152,7 +152,7 @@ func TestGetAssumptionsList(t *testing.T) {
 func TestUpdateAssumption(t *testing.T) {
 	manager := NewUsageAssumptionsManager()
 
-	tests := []struct {
+	testCases := []struct {
 		name          string
 		blueprintType string
 		key           string
@@ -182,7 +182,7 @@ func TestUpdateAssumption(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			err := manager.UpdateAssumption(tt.blueprintType, tt.key, tt.value)
 
@@ -292,7 +292,7 @@ func TestFormatAssumptionsForDisplay(t *testing.T) {
 func TestValidateAssumptionValue(t *testing.T) {
 	manager := NewUsageAssumptionsManager()
 
-	tests := []struct {
+	testCases := []struct {
 		name          string
 		blueprintType string
 		key           string
@@ -329,7 +329,7 @@ func TestValidateAssumptionValue(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			err := manager.ValidateAssumptionValue(tt.blueprintType, tt.key, tt.value)
 

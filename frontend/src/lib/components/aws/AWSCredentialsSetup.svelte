@@ -10,6 +10,8 @@
   let isValidating = false;
   let isValid = false;
   let validationError = '';
+  let validatedAccountId = '';
+  let validatedUserArn = '';
   
   const regions = [
     { value: 'us-east-1', name: 'US East (N. Virginia)' },
@@ -104,9 +106,13 @@
       
       if (response.ok && result.valid) {
         isValid = true;
+        validatedAccountId = result.accountId;
+        validatedUserArn = result.userArn;
         toast.success('AWS credentials validated successfully!');
       } else {
         isValid = false;
+        validatedAccountId = '';
+        validatedUserArn = '';
         validationError = result.error || 'Invalid credentials';
         toast.error('Credential validation failed');
       }
@@ -246,9 +252,21 @@
       {/if}
       
       {#if isValid}
-        <div class="flex items-center space-x-2 text-green-600 dark:text-green-400">
-          <CheckCircle class="w-4 h-4" />
-          <span class="text-sm">Credentials validated successfully</span>
+        <div class="space-y-2">
+          <div class="flex items-center space-x-2 text-green-600 dark:text-green-400">
+            <CheckCircle class="w-4 h-4" />
+            <span class="text-sm font-medium">Credentials validated successfully</span>
+          </div>
+          <div class="bg-green-50 dark:bg-green-900/10 p-3 rounded-lg text-xs space-y-1">
+            <div class="flex justify-between">
+              <span class="text-gray-500">Account ID:</span>
+              <span class="font-mono font-medium">{validatedAccountId}</span>
+            </div>
+            <div class="flex flex-col">
+              <span class="text-gray-500">User ARN:</span>
+              <span class="font-mono break-all">{validatedUserArn}</span>
+            </div>
+          </div>
         </div>
       {/if}
       

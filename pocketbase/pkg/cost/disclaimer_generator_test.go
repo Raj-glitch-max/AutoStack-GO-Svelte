@@ -197,7 +197,7 @@ func TestGenerateDisclaimer_UnsupportedBlueprint(t *testing.T) {
 func TestGetSimpleDisclaimer(t *testing.T) {
 	dg := NewDisclaimerGenerator()
 	
-	tests := []struct {
+	testCases := []struct {
 		name          string
 		blueprintType string
 		wantError     bool
@@ -229,7 +229,7 @@ func TestGetSimpleDisclaimer(t *testing.T) {
 		},
 	}
 	
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			disclaimer, err := dg.GetSimpleDisclaimer(tt.blueprintType)
 			
@@ -329,7 +329,7 @@ func TestFormatDisclaimerForDisplay(t *testing.T) {
 func TestValidateDisclaimerCompleteness(t *testing.T) {
 	dg := NewDisclaimerGenerator()
 	
-	tests := []struct {
+	testCases := []struct {
 		name      string
 		data      *DisclaimerData
 		wantError bool
@@ -408,7 +408,7 @@ func TestValidateDisclaimerCompleteness(t *testing.T) {
 		},
 	}
 	
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			err := dg.ValidateDisclaimerCompleteness(tt.data)
 			

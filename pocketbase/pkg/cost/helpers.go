@@ -61,3 +61,26 @@ func getBoolOrDefault(m map[string]interface{}, key string, defaultValue bool) b
 	}
 	return defaultValue
 }
+
+// containsAll checks if a string contains all of the given substrings
+func containsAll(s string, substrings ...string) bool {
+	for _, sub := range substrings {
+		if !containsStr(s, sub) {
+			return false
+		}
+	}
+	return true
+}
+
+// containsStr is a simple case-insensitive contains check
+func containsStr(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}())
+}

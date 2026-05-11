@@ -340,7 +340,7 @@ func TestBreakdownGenerator_GenerateBreakdown_MapBreakdown(t *testing.T) {
 func TestBreakdownGenerator_CategorizeService(t *testing.T) {
 	bg := NewBreakdownGenerator()
 
-	tests := []struct {
+	testCases := []struct {
 		service  string
 		expected ServiceCategory
 	}{
@@ -362,7 +362,7 @@ func TestBreakdownGenerator_CategorizeService(t *testing.T) {
 		{"unknown", CategoryOther},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.service, func(t *testing.T) {
 			category := bg.categorizeService(tt.service)
 			if category != tt.expected {
@@ -375,7 +375,7 @@ func TestBreakdownGenerator_CategorizeService(t *testing.T) {
 func TestBreakdownGenerator_ValidateBreakdownSum(t *testing.T) {
 	bg := NewBreakdownGenerator()
 
-	tests := []struct {
+	testCases := []struct {
 		name          string
 		breakdown     *CostBreakdownByCategory
 		expectedTotal float64
@@ -422,7 +422,7 @@ func TestBreakdownGenerator_ValidateBreakdownSum(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			err := bg.validateBreakdownSum(tt.breakdown, tt.expectedTotal)
 			if tt.shouldError && err == nil {
@@ -438,7 +438,7 @@ func TestBreakdownGenerator_ValidateBreakdownSum(t *testing.T) {
 func TestBreakdownGenerator_GetCategoryDescription(t *testing.T) {
 	bg := NewBreakdownGenerator()
 
-	tests := []struct {
+	testCases := []struct {
 		category ServiceCategory
 		expected string
 	}{
@@ -449,7 +449,7 @@ func TestBreakdownGenerator_GetCategoryDescription(t *testing.T) {
 		{CategoryOther, "Other services (CloudWatch, SQS, API requests)"},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(string(tt.category), func(t *testing.T) {
 			description := bg.GetCategoryDescription(tt.category)
 			if description != tt.expected {
@@ -502,7 +502,7 @@ func TestBreakdownGenerator_FormatBreakdown(t *testing.T) {
 func TestBreakdownGenerator_BreakdownSumsToTotal(t *testing.T) {
 	bg := NewBreakdownGenerator()
 
-	tests := []struct {
+	testCases := []struct {
 		name      string
 		breakdown interface{}
 		total     float64
@@ -533,7 +533,7 @@ func TestBreakdownGenerator_BreakdownSumsToTotal(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			estimate := &CostEstimateWithRange{
 				Estimate:  tt.total,

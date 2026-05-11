@@ -11,7 +11,7 @@ import (
 func TestBreakdownIntegration_AllBlueprints(t *testing.T) {
 	bg := NewBreakdownGenerator()
 
-	tests := []struct {
+	testCases := []struct {
 		name         string
 		estimate     *CostEstimateWithRange
 		hasCompute   bool
@@ -119,7 +119,7 @@ func TestBreakdownIntegration_AllBlueprints(t *testing.T) {
 		},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.name, func(t *testing.T) {
 			breakdown, err := bg.GenerateBreakdown(tt.estimate)
 			if err != nil {
@@ -244,7 +244,7 @@ func TestBreakdownIntegration_CategoryCoverage(t *testing.T) {
 func TestBreakdownIntegration_ServiceMapping(t *testing.T) {
 	bg := NewBreakdownGenerator()
 
-	tests := []struct {
+	testCases := []struct {
 		serviceName      string
 		expectedCategory ServiceCategory
 	}{
@@ -277,7 +277,7 @@ func TestBreakdownIntegration_ServiceMapping(t *testing.T) {
 		{"sqs", CategoryOther},
 	}
 
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.serviceName, func(t *testing.T) {
 			category := bg.categorizeService(tt.serviceName)
 			if category != tt.expectedCategory {

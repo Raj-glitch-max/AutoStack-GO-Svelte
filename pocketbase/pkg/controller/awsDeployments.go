@@ -11,6 +11,8 @@ import (
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/terraform"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/util"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/watcher"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/intelligence"
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/dbx"
 	"github.com/pocketbase/pocketbase"
@@ -22,6 +24,7 @@ type AWSDeploymentController struct {
 	credManager     *aws.CredentialManager
 	terraformExec   *terraform.ExecutorService
 	logStreamer     terraform.LogStreamer
+	errorAnalyzer   *intelligence.ErrorAnalyzer
 	// WEEK 2 TASK 2.4: Confirmation timeout tracking
 	planConfirmations map[string]*planConfirmation
 }
@@ -59,6 +62,7 @@ func NewAWSDeploymentController(app *pocketbase.PocketBase, credManager *aws.Cre
 		credManager:       credManager,
 		terraformExec:     terraformExec,
 		logStreamer:       logStreamer,
+		errorAnalyzer:     intelligence.NewErrorAnalyzer(),
 		planConfirmations: make(map[string]*planConfirmation),
 	}
 }
@@ -137,6 +141,24 @@ func (c *AWSDeploymentController) HandleAWSDeploymentCreate(ctx echo.Context) er
 
 	if err := c.app.Dao().SaveRecord(deployment); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to create deployment")
+	}
+
+	// Estimate cost
+	estimator, err := aws.NewCostEstimatorService(c.app)
+	if err == nil {
+		estimate, err := estimator.EstimateCost(aws.DeploymentConfiguration{
+			Blueprint:     blueprint.GetString("name"),
+			Region:        req.Region,
+			Configuration: req.Configuration,
+		})
+		if err == nil {
+			// Save estimate to DB
+			c.saveCostEstimate(deploymentID, blueprint.GetString("name"), req.Region, estimate)
+		} else {
+			log.Printf("Failed to estimate cost: %v", err)
+		}
+	} else {
+		log.Printf("Failed to initialize cost estimator: %v", err)
 	}
 
 	// Start initial rollout asynchronously
@@ -357,7 +379,13 @@ func (c *AWSDeploymentController) HandleAWSDeploymentPlan(ctx echo.Context) erro
 	result, err := c.terraformExec.Plan(context.Background(), deploymentID, user.Id, tfConfig, c.logStreamer)
 	if err != nil {
 		deployment.Set("status", "failed")
-		deployment.Set("errorMessage", fmt.Sprintf("Plan failed: %v", err))
+		
+		// Analyze error
+		analysis := c.errorAnalyzer.AnalyzeError(context.Background(), result.Output, "terraform")
+		analysisJSON, _ := json.Marshal(analysis)
+		deployment.Set("errorAnalysis", string(analysisJSON))
+		deployment.Set("errorMessage", fmt.Sprintf("Plan failed: %s", analysis.Description))
+		
 		c.app.Dao().SaveRecord(deployment)
 		return echo.NewHTTPError(http.StatusInternalServerError, fmt.Sprintf("Plan failed: %v", err))
 	}
@@ -574,11 +602,19 @@ func (c *AWSDeploymentController) executeApply(deploymentID, rolloutID, userID s
 	result, err := c.terraformExec.Apply(context.Background(), deploymentID, rolloutID, userID, true, c.logStreamer)
 	if err != nil || result.ExitCode != 0 {
 		log.Printf("Terraform apply failed: %v", err)
-		errorMsg := "Terraform apply failed"
-		if err != nil {
-			errorMsg = fmt.Sprintf("Terraform apply failed: %v", err)
+		
+		// Update deployment record with analysis
+		deployment, fetchErr := c.app.Dao().FindRecordById("awsDeployments", deploymentID)
+		if fetchErr == nil {
+			analysis := c.errorAnalyzer.AnalyzeError(context.Background(), result.Output, "terraform")
+			analysisJSON, _ := json.Marshal(analysis)
+			deployment.Set("errorAnalysis", string(analysisJSON))
+			deployment.Set("errorMessage", fmt.Sprintf("Apply failed: %s", analysis.Description))
+			deployment.Set("status", "failed")
+			c.app.Dao().SaveRecord(deployment)
+		} else {
+			c.updateDeploymentStatus(deploymentID, "failed", "Terraform apply failed")
 		}
-		c.updateDeploymentStatus(deploymentID, "failed", errorMsg)
 		return
 	}
 
@@ -626,11 +662,90 @@ func (c *AWSDeploymentController) executeDestroy(deploymentID, rolloutID, userID
 	c.updateDeploymentStatus(deploymentID, "destroyed", "")
 }
 
-// updateDeploymentStatus updates the deployment status
+// HandleRolloutList lists rollouts for a deployment
+func (c *AWSDeploymentController) HandleRolloutList(ctx echo.Context) error {
+	user := ctx.Get("user").(*models.Record)
+	if user == nil {
+		return echo.NewHTTPError(http.StatusUnauthorized, "Authentication required")
+	}
+
+	deploymentID := ctx.PathParam("deploymentId")
+	deployment, err := c.app.Dao().FindRecordById("awsDeployments", deploymentID)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusNotFound, "Deployment not found")
+	}
+
+	if deployment.GetString("user") != user.Id {
+		return echo.NewHTTPError(http.StatusForbidden, "Access denied")
+	}
+
+	rollouts, err := c.app.Dao().FindRecordsByExpr("awsRollouts",
+		dbx.NewExp("deployment = {:deployment}", dbx.Params{"deployment": deploymentID}))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to fetch rollouts")
+	}
+
+	return ctx.JSON(http.StatusOK, rollouts)
+}
+
+// saveCostEstimate persists a cost estimate to the database
+func (c *AWSDeploymentController) saveCostEstimate(deploymentID, blueprint, region string, estimate *aws.CostEstimate) {
+	collection, err := c.app.Dao().FindCollectionByNameOrId("costEstimates")
+	if err != nil {
+		log.Printf("Failed to find costEstimates collection: %v", err)
+		return
+	}
+
+	record := models.NewRecord(collection)
+	record.Set("deployment", deploymentID)
+	record.Set("blueprint", blueprint)
+	record.Set("region", region)
+	record.Set("totalEstimate", estimate.TotalMonthlyCost)
+	record.Set("disclaimer", estimate.Disclaimer)
+	record.Set("pricingVersion", "v1")
+
+	// Breakdown mapping
+	if val, ok := estimate.Breakdown["ECS Fargate Compute"]; ok {
+		record.Set("computeMonthly", val)
+	}
+	if val, ok := estimate.Breakdown["Application Load Balancer"]; ok {
+		record.Set("networkingMonthly", val)
+	}
+	if val, ok := estimate.Breakdown["NAT Gateway"]; ok {
+		record.Set("networkingMonthly", record.GetFloat("networkingMonthly") + val)
+	}
+	if val, ok := estimate.Breakdown["RDS Database"]; ok {
+		record.Set("computeMonthly", record.GetFloat("computeMonthly") + val)
+	}
+	if val, ok := estimate.Breakdown["RDS Storage"]; ok {
+		record.Set("storageMonthly", val)
+	}
+	if val, ok := estimate.Breakdown["S3 Storage"]; ok {
+		record.Set("storageMonthly", val)
+	}
+	if val, ok := estimate.Breakdown["CloudFront CDN"]; ok {
+		record.Set("networkingMonthly", record.GetFloat("networkingMonthly") + val)
+	}
+	if val, ok := estimate.Breakdown["Data Transfer"]; ok {
+		record.Set("transferMonthly", val)
+	}
+
+	// Set range (simplified)
+	record.Set("rangeMin", estimate.TotalMonthlyCost * 0.9)
+	record.Set("rangeMax", estimate.TotalMonthlyCost * 1.1)
+
+	if err := c.app.Dao().SaveRecord(record); err != nil {
+		log.Printf("Failed to save cost estimate: %v", err)
+	}
+}
+
+// updateDeploymentStatus persists a new deployment status and immediately broadcasts
+// it to all WebSocket clients subscribed to this deployment's status channel.
+// Broadcast happens only when the DB save succeeds — never on stale state.
 func (c *AWSDeploymentController) updateDeploymentStatus(deploymentID, status string, errorMessage string) {
 	deployment, err := c.app.Dao().FindRecordById("awsDeployments", deploymentID)
 	if err != nil {
-		log.Printf("Failed to find deployment %s: %v", deploymentID, err)
+		log.Printf("Failed to find deployment %s for status update: %v", deploymentID, err)
 		return
 	}
 
@@ -639,9 +754,19 @@ func (c *AWSDeploymentController) updateDeploymentStatus(deploymentID, status st
 		deployment.Set("errorMessage", errorMessage)
 	}
 	if err := c.app.Dao().SaveRecord(deployment); err != nil {
-		log.Printf("Failed to update deployment status: %v", err)
+		log.Printf("Failed to save deployment status %s=%s: %v", deploymentID, status, err)
+		return
 	}
+
+	// Push state transition to all subscribed WebSocket clients.
+	// This is what drives the live progress indicator on the frontend.
+	broadcastMsg := status
+	if errorMessage != "" {
+		broadcastMsg = errorMessage
+	}
+	watcher.BroadcastDeploymentStatus(deploymentID, status, broadcastMsg)
 }
+
 
 // WEEK 3 TASK 3.1: Test helper for concurrent deployment prevention
 // This would be used in integration tests to verify the 409 response

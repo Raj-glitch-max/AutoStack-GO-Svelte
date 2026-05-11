@@ -5,6 +5,7 @@ import { goto } from "$app/navigation";
 import type { TypedPocketBase } from "./generated-types";
 
 export const client = new PocketBase() as TypedPocketBase;
+export const pb = client; // Alias for compatibility
 
 export const currentUser = writable(client.authStore.record);
 

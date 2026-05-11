@@ -1,15 +1,15 @@
 package controller
 
 import (
+	"strings"
+	"github.com/pocketbase/pocketbase/models"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/labstack/echo/v5"
-	"github.com/pocketbase/pocketbase/models"
 	"github.com/pocketbase/pocketbase/tests"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/jobs"
 )
@@ -17,6 +17,7 @@ import (
 func TestGetPricingStatus(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -60,6 +61,7 @@ func TestGetPricingStatus(t *testing.T) {
 func TestTriggerManualRefresh(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -108,6 +110,7 @@ func TestTriggerManualRefresh(t *testing.T) {
 func TestGetJobStatus(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -147,6 +150,7 @@ func TestGetJobStatus(t *testing.T) {
 func TestClearCache(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Check if collection exists, skip test if not
 	collection, err := app.Dao().FindCollectionByNameOrId("awsPricingCache")
@@ -212,6 +216,7 @@ func TestClearCache(t *testing.T) {
 func TestGetRegionStatus(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -254,6 +259,7 @@ func TestGetRegionStatus(t *testing.T) {
 func TestGetPricingMetrics(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -301,6 +307,7 @@ func TestGetPricingMetrics(t *testing.T) {
 func TestTriggerJob(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -348,6 +355,7 @@ func TestTriggerJob(t *testing.T) {
 func TestManualRefreshWithInvalidJSON(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -378,6 +386,7 @@ func TestManualRefreshWithInvalidJSON(t *testing.T) {
 func TestPricingStatusResponseTime(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)
@@ -411,6 +420,7 @@ func TestPricingStatusResponseTime(t *testing.T) {
 func TestConcurrentPricingStatusRequests(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	// Create job manager
 	jobManager := jobs.NewPricingJobManager(app)

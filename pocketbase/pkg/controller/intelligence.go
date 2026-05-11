@@ -84,7 +84,7 @@ func RegisterIntelligenceRoutes(app *pocketbase.PocketBase, e *echo.Echo) {
 			"analysis":  analysis,
 			"attemptId": recoveryAttempt.Id,
 		})
-	}, apis.ActivityLogger(app))
+	}, apis.ActivityLogger(app), RateLimitMiddleware(0.5, 2))
 
 	// Get recovery history for a deployment
 	e.GET("/api/intelligence/recovery-history/:deploymentId", func(c echo.Context) error {
@@ -366,5 +366,69 @@ func RegisterIntelligenceRoutes(app *pocketbase.PocketBase, e *echo.Echo) {
 			"attempt":  recoveryAttempt,
 			"attemptId": attemptRecord.Id,
 		})
+	}, apis.ActivityLogger(app), RateLimitMiddleware(0.2, 1)) // 1 request per 5 seconds, burst 1 for recovery
+
+	// Get deployment recommendation from app description
+	e.POST("/api/intelligence/recommend", func(c echo.Context) error {
+		// Require authentication
+		authRecord, _ := c.Get(apis.ContextAuthRecordKey).(*models.Record)
+		if authRecord == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+
+		var req struct {
+			Description string `json:"description"`
+		}
+		if err := c.Bind(&req); err != nil {
+			return apis.NewBadRequestError("Invalid request data", err)
+		}
+
+		if req.Description == "" {
+			return apis.NewBadRequestError("Description is required", nil)
+		}
+
+		advisor := intelligence.NewAIAdvisor()
+		recommendation, err := advisor.GetRecommendation(c.Request().Context(), req.Description)
+		if err != nil {
+			return c.JSON(http.StatusInternalServerError, map[string]string{
+				"error": err.Error(),
+			})
+		}
+
+		return c.JSON(http.StatusOK, recommendation)
+	}, apis.ActivityLogger(app), RateLimitMiddleware(0.1, 1)) // 1 request per 10 seconds, burst 1 for advisor
+
+	// Store AI advisor feedback for prompt tuning
+	e.POST("/api/intelligence/feedback", func(c echo.Context) error {
+		authRecord, _ := c.Get(apis.ContextAuthRecordKey).(*models.Record)
+		if authRecord == nil {
+			return apis.NewUnauthorizedError("Authentication required", nil)
+		}
+
+		var req struct {
+			Description    string      `json:"description"`
+			Recommendation interface{} `json:"recommendation"`
+			Helpful        bool        `json:"helpful"`
+			Type           string      `json:"type"` // "advisor", "recovery", etc.
+		}
+		if err := c.Bind(&req); err != nil {
+			return apis.NewBadRequestError("Invalid request data", err)
+		}
+
+		// Store feedback in recoveryAttempts collection (reuse for now) or log it
+		// This data is used to tune prompts over time
+		collection, err := app.Dao().FindCollectionByNameOrId("recoveryAttempts")
+		if err == nil {
+			record := models.NewRecord(collection)
+			record.Set("deployment", "feedback")
+			record.Set("errorType", req.Type)
+			record.Set("description", req.Description)
+			record.Set("autoFixable", req.Helpful)
+			record.Set("status", "feedback")
+			record.Set("errorLogs", req.Description)
+			app.Dao().SaveRecord(record) // best-effort
+		}
+
+		return c.JSON(http.StatusOK, map[string]string{"status": "recorded"})
 	}, apis.ActivityLogger(app))
 }

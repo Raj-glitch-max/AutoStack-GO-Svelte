@@ -9,6 +9,7 @@ import (
 func TestBlueprintMapper(t *testing.T) {
 	app, _ := tests.NewTestApp()
 	defer app.Cleanup()
+	_ = bootstrapAlertTestCollections(app)
 
 	mapper := NewBlueprintMapper(app)
 

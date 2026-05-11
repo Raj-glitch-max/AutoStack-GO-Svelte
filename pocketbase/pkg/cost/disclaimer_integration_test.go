@@ -76,7 +76,7 @@ func TestDisclaimerIntegration_WithCostEstimate(t *testing.T) {
 func TestDisclaimerIntegration_SimpleDisclaimerFormat(t *testing.T) {
 	dg := NewDisclaimerGenerator()
 	
-	tests := []struct {
+	testCases := []struct {
 		blueprint string
 		keywords  []string
 	}{
@@ -98,7 +98,7 @@ func TestDisclaimerIntegration_SimpleDisclaimerFormat(t *testing.T) {
 		},
 	}
 	
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.blueprint, func(t *testing.T) {
 			disclaimer, err := dg.GetSimpleDisclaimer(tt.blueprint)
 			if err != nil {
@@ -291,7 +291,7 @@ func TestDisclaimerIntegration_RegionVariations(t *testing.T) {
 func TestDisclaimerIntegration_AccuracyStatements(t *testing.T) {
 	dg := NewDisclaimerGenerator()
 	
-	tests := []struct {
+	testCases := []struct {
 		blueprint       string
 		minPercentage   int
 		maxPercentage   int
@@ -318,7 +318,7 @@ func TestDisclaimerIntegration_AccuracyStatements(t *testing.T) {
 		},
 	}
 	
-	for _, tt := range tests {
+	for _, tt := range testCases {
 		t.Run(tt.blueprint, func(t *testing.T) {
 			disclaimerData, err := dg.GenerateDisclaimer(tt.blueprint, "us-east-1")
 			if err != nil {

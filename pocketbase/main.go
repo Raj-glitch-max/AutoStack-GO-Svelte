@@ -1,7 +1,7 @@
 package main
 
 import (
-	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +13,9 @@ import (
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/controller"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/env"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/k8s"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/notifications"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/health"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/intelligence"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/terraform"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/watcher"
 	"github.com/labstack/echo/v5"
@@ -53,21 +56,38 @@ func main() {
 	)
 	migrationsDir := "" // default to "pb_migrations" (for js) and "migrations" (for go)
 
-	// Initialize AWS services
-	encryptionKey := make([]byte, 32)
-	if _, err := rand.Read(encryptionKey); err != nil {
-		log.Fatal("Failed to generate encryption key:", err)
+	// Initialize AWS services.
+	// The encryption key MUST be loaded from the environment — never generated at
+	// runtime. A random key means credentials become unreadable after every restart.
+	encryptionKeyHex := env.Config.EncryptionKeyHex
+	if encryptionKeyHex == "" {
+		log.Fatal("[FATAL] AUTOSTACK_ENCRYPTION_KEY environment variable is not set. " +
+			"Generate one with: openssl rand -hex 32")
 	}
-	
+	encryptionKey, err := hex.DecodeString(encryptionKeyHex)
+	if err != nil || len(encryptionKey) != 32 {
+		log.Fatal("[FATAL] AUTOSTACK_ENCRYPTION_KEY must be a 64-character hex string (32 bytes). " +
+			"Generate one with: openssl rand -hex 32")
+	}
+
 	credManager := aws.NewCredentialManager(encryptionKey, app)
-	terraformExec := terraform.NewExecutorService("./terraform-workdir", credManager)
+	terraformExec := terraform.NewExecutorService(env.Config.TerraformWorkDir, credManager)
 	
 	// Use WebSocket log streamer for real-time logs
 	logStreamer := watcher.GetAWSLogStreamer()
 	
+	webhookService := notifications.NewWebhookService(app)
 	awsController := controller.NewAWSDeploymentController(app, credManager, terraformExec, logStreamer)
+	awsLifecycleController := controller.NewAWSLifecycleController(app, terraformExec, credManager, webhookService)
 	
-	// Initialize Infracost service for cost estimation
+	// Initialize Email Service
+	emailService := notifications.NewEmailService()
+	
+	// Initialize Actual Cost Controller
+	actualCostController, err := controller.NewActualCostController(app, emailService)
+	if err != nil {
+		log.Printf("[Error] Failed to initialize ActualCostController: %v", err)
+	}
 	infracostAPIKey := os.Getenv("INFRACOST_API_KEY")
 	if infracostAPIKey == "" {
 		log.Println("[WARNING] INFRACOST_API_KEY not set - cost estimation will be unavailable")
@@ -75,11 +95,7 @@ func main() {
 	infracostService := aws.NewInfracostService(infracostAPIKey)
 	
 	// Initialize cost controllers
-	costEstimateController := controller.NewCostEstimateController(app)
-	actualCostController, err := controller.NewActualCostController(app)
-	if err != nil {
-		log.Printf("[WARNING] Failed to initialize actual cost controller: %v", err)
-	}
+	// costEstimateController := controller.NewCostEstimateController(app)
 
 	// load js files to allow loading external JavaScript migrations
 	jsvm.MustRegister(app, jsvm.Config{
@@ -180,8 +196,7 @@ func main() {
 
 		e.Router.GET("/pb/cluster-info", func(c echo.Context) error {
 			return controller.HandleClusterInfo(c, app)
-			// }, apis.RequireRecordAuth("users"))
-		})
+		}, apis.RequireRecordAuth("users"))
 
 		// delete a pod of a rollout by pod name
 		e.Router.DELETE("/pb/:projectId/pod/:podName", func(c echo.Context) error {
@@ -214,31 +229,48 @@ func main() {
 
 		// AWS Deployment Routes
 		e.Router.POST("/api/aws/deployments", awsController.HandleAWSDeploymentCreate, apis.RequireRecordAuth("users"))
-		e.Router.GET("/api/aws/deployments/:projectId", awsController.HandleAWSDeploymentList, apis.RequireRecordAuth("users"))
-		e.Router.GET("/api/aws/deployments/:deploymentId", awsController.HandleAWSDeploymentGet, apis.RequireRecordAuth("users"))
-		e.Router.DELETE("/api/aws/deployments/:deploymentId", awsController.HandleAWSDeploymentDelete, apis.RequireRecordAuth("users"))
-		e.Router.POST("/api/aws/deployments/:deploymentId/plan", awsController.HandleAWSDeploymentPlan, apis.RequireRecordAuth("users"))
-		e.Router.POST("/api/aws/deployments/:deploymentId/apply", awsController.HandleAWSDeploymentApply, apis.RequireRecordAuth("users"))
-		e.Router.POST("/api/aws/deployments/:deploymentId/destroy", awsController.HandleAWSDeploymentDestroy, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/aws/deployments/:projectId", awsController.HandleAWSDeploymentList, apis.RequireRecordAuth("users"), controller.RBACMiddleware(app, controller.RoleViewer))
+		e.Router.GET("/api/aws/deployments/:deploymentId", awsController.HandleAWSDeploymentGet, apis.RequireRecordAuth("users"), controller.RBACMiddleware(app, controller.RoleViewer))
+		e.Router.DELETE("/api/aws/deployments/:deploymentId", awsController.HandleAWSDeploymentDelete, apis.RequireRecordAuth("users"), controller.RBACMiddleware(app, controller.RoleOwner))
+		e.Router.POST("/api/aws/deployments/:deploymentId/plan", awsController.HandleAWSDeploymentPlan, apis.RequireRecordAuth("users"), controller.RBACMiddleware(app, controller.RoleDeployer))
+		e.Router.POST("/api/aws/deployments/:deploymentId/apply", awsController.HandleAWSDeploymentApply, apis.RequireRecordAuth("users"), controller.RBACMiddleware(app, controller.RoleDeployer))
+		e.Router.POST("/api/aws/deployments/:deploymentId/destroy", awsController.HandleAWSDeploymentDestroy, apis.RequireRecordAuth("users"), controller.RBACMiddleware(app, controller.RoleDeployer))
+
+		// New AWS Lifecycle Routes
+		awsLifecycleController.RegisterRoutes(e)
 
 		// AWS Cost Estimation
 		e.Router.POST("/api/aws/cost-estimate", func(c echo.Context) error {
 			return handleCostEstimate(c, infracostService)
-		}, apis.RequireRecordAuth("users"))
+		}, apis.RequireRecordAuth("users"), controller.RateLimitMiddleware(1.0, 5))
 
-		// AI Intelligence Routes
+		// Intelligence Routes
 		controller.RegisterIntelligenceRoutes(app, e.Router)
+
+		// Universal Deployment Engine
+		controller.RegisterUniversalDeployRoutes(app, e.Router, credManager, terraformExec)
 		
-		// Cost Estimation Routes
-		costEstimateController.RegisterCostEstimateRoutes(e.Router)
-		
-		// Actual Cost Routes
+		// AWS & Cost Routes
+		controller.RegisterAlertRoutes(e, app)
+		controller.RegisterAlertPreferencesRoutes(app, e.Router)
+
 		if actualCostController != nil {
 			actualCostController.RegisterActualCostRoutes(e.Router)
 		}
+
+		// Webhook Routes
+		webhookService := notifications.NewWebhookService(app)
+		controller.RegisterWebhookRoutes(app, e.Router, webhookService)
+
+		// Health Routes
+		healthMonitor := aws.NewHealthMonitor(app, credManager)
+		k8sMonitor := health.NewK8sHealthMonitor(app)
+		healthController := controller.NewHealthController(app, healthMonitor, k8sMonitor)
+		healthController.RegisterHealthRoutes(e.Router.Group("", apis.RequireRecordAuth("users")))
 		
-		// Cost Threshold Routes
-		controller.RegisterCostThresholdRoutes(app, e.Router)
+		e.Router.GET("/api/aws/deployments/:deploymentId/rollouts", func(c echo.Context) error {
+			return awsController.HandleRolloutList(c)
+		}, apis.RequireRecordAuth("users"))
 
 		// AWS Credentials Routes
 		e.Router.POST("/api/aws/credentials", func(c echo.Context) error {
@@ -254,7 +286,7 @@ func main() {
 		}, apis.RequireRecordAuth("users"))
 		
 		e.Router.DELETE("/api/aws/credentials", func(c echo.Context) error {
-			user := c.Get("user").(*models.Record)
+			user, _ := c.Get(apis.ContextAuthRecordKey).(*models.Record)
 			if user == nil {
 				return echo.NewHTTPError(http.StatusUnauthorized, "Authentication required")
 			}
@@ -266,6 +298,15 @@ func main() {
 			
 			return c.JSON(http.StatusOK, map[string]string{"message": "Credentials deleted successfully"})
 		}, apis.RequireRecordAuth("users"))
+
+		// GCP Credential Routes
+		controller.RegisterGCPCredentialRoutes(app, e.Router, encryptionKey)
+
+		// Azure Credential Routes
+		controller.RegisterAzureCredentialRoutes(app, e.Router, encryptionKey)
+
+		// Multi-Cloud Pricing Comparison
+		controller.RegisterMultiCloudPricingRoutes(app, e.Router)
 
 		return nil
 	})
@@ -279,6 +320,43 @@ func main() {
 			if err != nil {
 				log.Printf("Error updating image: %v\n", err)
 			}
+		})
+		// Run AWS pricing refresh daily at midnight
+		scheduler.MustAdd("awsPricingRefresh", "0 0 * * *", func() {
+			log.Println("Scheduled task: awsPricingRefresh starting...")
+			fetcher, err := aws.NewPricingFetcher(app)
+			if err != nil {
+				log.Printf("Error creating pricing fetcher: %v\n", err)
+				return
+			}
+			if err := fetcher.FetchAllPricing(); err != nil {
+				log.Printf("Error refreshing AWS pricing: %v\n", err)
+			}
+			log.Println("Scheduled task: awsPricingRefresh completed")
+		})
+
+		// Run AWS actual cost fetch daily at 1 AM (after pricing refresh)
+		scheduler.MustAdd("awsActualCostFetch", "0 1 * * *", func() {
+			log.Println("Scheduled task: awsActualCostFetch starting...")
+			fetcher, err := aws.NewActualCostFetcher(app, emailService)
+			if err != nil {
+				log.Printf("Error creating actual cost fetcher: %v\n", err)
+				return
+			}
+			if err := fetcher.FetchActualCostsForActiveDeployments(); err != nil {
+				log.Printf("Error fetching actual costs: %v\n", err)
+			}
+			log.Println("Scheduled task: awsActualCostFetch completed")
+		})
+
+		// Run AI Cost Optimizer weekly on Sundays at 2 AM
+		scheduler.MustAdd("aiCostOptimizer", "0 2 * * 0", func() {
+			log.Println("Scheduled task: aiCostOptimizer starting...")
+			optimizer := intelligence.NewCostOptimizer(app)
+			if err := optimizer.RunOptimizationJob(); err != nil {
+				log.Printf("Error running cost optimizer: %v\n", err)
+			}
+			log.Println("Scheduled task: aiCostOptimizer completed")
 		})
 
 		scheduler.Start()
@@ -300,7 +378,7 @@ func (s *SimpleLogStreamer) StreamLog(deploymentID, rolloutID, operation, level,
 
 // AWS Credentials API handlers
 func handleAWSCredentialsCreate(c echo.Context, credManager *aws.CredentialManager) error {
-	user := c.Get("user").(*models.Record)
+	user, _ := c.Get(apis.ContextAuthRecordKey).(*models.Record)
 	if user == nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "Authentication required")
 	}
@@ -353,7 +431,7 @@ func handleAWSCredentialsValidate(c echo.Context, credManager *aws.CredentialMan
 }
 
 func handleAWSCredentialsStatus(c echo.Context, credManager *aws.CredentialManager) error {
-	user := c.Get("user").(*models.Record)
+	user, _ := c.Get(apis.ContextAuthRecordKey).(*models.Record)
 	if user == nil {
 		return echo.NewHTTPError(http.StatusUnauthorized, "Authentication required")
 	}

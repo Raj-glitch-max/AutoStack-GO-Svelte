@@ -52,3 +52,25 @@ export interface ActualCostDelayResponse {
     availableIn: string;
     deploymentAge: string;
 }
+
+export interface CostAlert {
+    id: string;
+    deploymentId: string;
+    deployment?: any; // Expanded deployment object
+    expand?: any; // Expanded relations
+    type: 'THRESHOLD' | 'SPIKE' | 'ANOMALY' | 'DROP' | 'anomaly_detected' | 'budget_exceeded';
+    severity: 'low' | 'medium' | 'high' | 'critical';
+    message: string;
+    currentCost: number;
+    actualCost?: number;
+    estimatedCost?: number;
+    variance?: number;
+    threshold?: number;
+    serviceBreakdown?: Record<string, number>;
+    acknowledged: boolean;
+    sentAt?: string;
+    created?: string;
+    createdAt: string;
+    updatedAt: string;
+    aiExplanation?: string; // AI-generated explanation for cost anomalies
+}

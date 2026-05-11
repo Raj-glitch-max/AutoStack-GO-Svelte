@@ -41,6 +41,8 @@ type CostAlertData struct {
 	EstimatedCost      float64
 	ActualCost         float64
 	VariancePercentage float64
+	Threshold          float64            // Alert threshold percentage
+	ServiceBreakdown   map[string]float64 // Service name -> cost
 }
 
 // DeploymentData represents a deployment notification
@@ -79,13 +81,35 @@ func NewEmailService() *EmailService {
 	}
 }
 
-// SendCostAlert sends a cost alert email
+// SendCostAlert sends a cost alert email using the professional template
 func (s *EmailService) SendCostAlert(userEmail string, alert *CostAlertData) error {
 	if !s.enabled {
 		log.Printf("[Email] Skipping cost alert email (service disabled)")
 		return nil
 	}
 	
+	// Get base URL from environment or use default
+	baseURL := os.Getenv("APP_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://autostack.io"
+	}
+	
+	// Format the alert data for the template
+	templateData := FormatCostAlertData(alert, baseURL)
+	
+	// Render the email template
+	emailTemplate, err := RenderCostAlertEmail(templateData)
+	if err != nil {
+		log.Printf("[Email] Failed to render cost alert template: %v", err)
+		// Fallback to simple email if template rendering fails
+		return s.sendSimpleCostAlert(userEmail, alert)
+	}
+	
+	return s.sendEmail(userEmail, emailTemplate.Subject, emailTemplate.HTMLBody)
+}
+
+// sendSimpleCostAlert sends a simple cost alert email as fallback
+func (s *EmailService) sendSimpleCostAlert(userEmail string, alert *CostAlertData) error {
 	subject := fmt.Sprintf("⚠️ Cost Alert: %s", alert.DeploymentName)
 	
 	html := fmt.Sprintf(`

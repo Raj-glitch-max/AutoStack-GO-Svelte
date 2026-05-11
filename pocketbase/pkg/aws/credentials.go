@@ -26,13 +26,17 @@ type CredentialManager struct {
 }
 
 type AWSCredentials struct {
-	AccessKeyID      string
-	SecretAccessKey  string
-	SessionToken     string
-	Region           string
-	StateBucketName  string // User's S3 bucket for Terraform state (BYOC)
-	StateDynamoTable string // User's DynamoDB table for state locking (BYOC)
+	AccessKeyID      string `json:"accessKeyId"`
+	SecretAccessKey  string `json:"secretAccessKey"`
+	SessionToken     string `json:"sessionToken"`
+	Region           string `json:"region"`
+	// StateBucketName and StateDynamoTable are the user's own S3 bucket and
+	// DynamoDB table for Terraform remote state (BYOC — Bring Your Own Cloud).
+	// Required for terraform init to succeed.
+	StateBucketName  string `json:"stateBucketName"`
+	StateDynamoTable string `json:"stateDynamoTable"`
 }
+
 
 type ValidationResult struct {
 	Valid     bool
@@ -108,9 +112,11 @@ func (cm *CredentialManager) DecryptValue(encrypted string) (string, error) {
 	return string(plaintext), nil
 }
 
-// StoreCredentials encrypts and stores AWS credentials for a user
+// StoreCredentials encrypts and stores AWS credentials for a user.
+// StateBucketName and StateDynamoTable are stored unencrypted — they are not
+// secrets, they are infrastructure identifiers needed to configure the S3 backend.
 func (cm *CredentialManager) StoreCredentials(userID string, creds AWSCredentials) error {
-	// Encrypt sensitive values
+	// Encrypt sensitive values.
 	encryptedAccessKey, err := cm.EncryptValue(creds.AccessKeyID)
 	if err != nil {
 		return fmt.Errorf("failed to encrypt access key: %w", err)
@@ -126,37 +132,47 @@ func (cm *CredentialManager) StoreCredentials(userID string, creds AWSCredential
 		return fmt.Errorf("failed to encrypt session token: %w", err)
 	}
 
-	// Check if credentials already exist for this user
-	existingRecord, err := cm.app.Dao().FindFirstRecordByFilter(
-		"awsCredentials",
-		"user = {:user}",
-		map[string]any{"user": userID},
-	)
-
+	// Look up the collection first — if it doesn't exist, fail fast and clearly.
 	collection, err := cm.app.Dao().FindCollectionByNameOrId("awsCredentials")
 	if err != nil {
 		return fmt.Errorf("failed to find awsCredentials collection: %w", err)
 	}
 
+	// Check if credentials already exist for this user.
+	// Use a separate variable so the "not found" case (nil record, nil error) is
+	// not confused with a real DB error.
+	existingRecord, lookupErr := cm.app.Dao().FindFirstRecordByFilter(
+		"awsCredentials",
+		"user = {:user}",
+		map[string]any{"user": userID},
+	)
+
 	var record *models.Record
-	if existingRecord != nil {
-		// Update existing record
+	if lookupErr == nil && existingRecord != nil {
+		// Update the existing record in-place.
 		record = existingRecord
 	} else {
-		// Create new record
+		// Create a new record (either no existing creds or DB returned "not found").
 		record = models.NewRecord(collection)
 		record.Set("user", userID)
 	}
 
-	// Set encrypted values
+	// Set encrypted credential values.
 	record.Set("accessKeyId", encryptedAccessKey)
 	record.Set("secretAccessKey", encryptedSecretKey)
 	record.Set("sessionToken", encryptedSessionToken)
 	record.Set("region", creds.Region)
 	record.Set("validated", false)
 
+	// Store Terraform state backend configuration.
+	// These are required for terraform init — if missing, every deploy fails.
+	// They are infrastructure identifiers, not secrets, so stored in plaintext.
+	record.Set("stateBucketName", creds.StateBucketName)
+	record.Set("stateDynamoTable", creds.StateDynamoTable)
+
 	return cm.app.Dao().SaveRecord(record)
 }
+
 
 // GetCredentials retrieves and decrypts AWS credentials for a user
 func (cm *CredentialManager) GetCredentials(userID string) (*AWSCredentials, error) {
@@ -193,6 +209,24 @@ func (cm *CredentialManager) GetCredentials(userID string) (*AWSCredentials, err
 		StateBucketName:  record.GetString("stateBucketName"),
 		StateDynamoTable: record.GetString("stateDynamoTable"),
 	}, nil
+}
+
+// GetConfigForUser returns an AWS SDK config for a specific user
+func (cm *CredentialManager) GetConfigForUser(ctx context.Context, userID string) (aws.Config, error) {
+	creds, err := cm.GetCredentials(userID)
+	if err != nil {
+		return aws.Config{}, err
+	}
+
+	return config.LoadDefaultConfig(
+		ctx,
+		config.WithRegion(creds.Region),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(
+			creds.AccessKeyID,
+			creds.SecretAccessKey,
+			creds.SessionToken,
+		)),
+	)
 }
 
 // ValidateCredentials tests AWS credentials by making an STS GetCallerIdentity call

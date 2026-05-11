@@ -11,11 +11,14 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/pricing"
 	"github.com/aws/aws-sdk-go-v2/service/pricing/types"
+	"github.com/pocketbase/pocketbase/core"
 )
 
 type CostEstimatorService struct {
+	app           core.App
 	pricingClient *pricing.Client
 	cache         map[string]*CachedPrice
+	pricingCache  *PricingCache
 }
 
 type CachedPrice struct {
@@ -38,15 +41,17 @@ type DeploymentConfiguration struct {
 	Configuration map[string]interface{} `json:"configuration"`
 }
 
-func NewCostEstimatorService(region string) (*CostEstimatorService, error) {
+func NewCostEstimatorService(app core.App) (*CostEstimatorService, error) {
 	cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion("us-east-1")) // Pricing API is only in us-east-1
 	if err != nil {
 		return nil, fmt.Errorf("failed to load AWS config: %w", err)
 	}
 
 	return &CostEstimatorService{
+		app:           app,
 		pricingClient: pricing.NewFromConfig(cfg),
 		cache:         make(map[string]*CachedPrice),
+		pricingCache:  NewPricingCache(app),
 	}, nil
 }
 
@@ -66,9 +71,41 @@ func (e *CostEstimatorService) EstimateCost(config DeploymentConfiguration) (*Co
 		return e.estimateFullStackCost(config, estimate)
 	case "static-site":
 		return e.estimateStaticSiteCost(config, estimate)
+	case "serverless":
+		return e.estimateServerlessCost(config, estimate)
 	default:
 		return e.estimateBasicCost(config, estimate)
 	}
+}
+
+// estimateServerlessCost calculates cost for serverless blueprint (Lambda + API Gateway)
+func (e *CostEstimatorService) estimateServerlessCost(config DeploymentConfiguration, estimate *CostEstimate) (*CostEstimate, error) {
+	// Assume 1M requests per month for estimation
+	requestsPerMonth := 1000000.0
+	
+	// Lambda cost
+	// $0.20 per 1M requests
+	lambdaRequestCost := (requestsPerMonth / 1000000.0) * 0.20
+	
+	// Compute cost: 128MB, 100ms duration
+	// $0.0000166667 per GB-second
+	gbSeconds := (128.0 / 1024.0) * 0.1 * requestsPerMonth
+	lambdaComputeCost := gbSeconds * 0.0000166667
+	
+	estimate.Breakdown["AWS Lambda Compute"] = lambdaComputeCost
+	estimate.Breakdown["AWS Lambda Requests"] = lambdaRequestCost
+	
+	// API Gateway (HTTP API)
+	// $1.00 per 1M requests
+	apiGatewayCost := (requestsPerMonth / 1000000.0) * 1.00
+	estimate.Breakdown["API Gateway (HTTP)"] = apiGatewayCost
+	
+	// Calculate total
+	for _, cost := range estimate.Breakdown {
+		estimate.TotalMonthlyCost += cost
+	}
+	
+	return estimate, nil
 }
 
 // estimateECSWebAppCost calculates cost for ECS web application
@@ -198,23 +235,46 @@ func (e *CostEstimatorService) getFargatePrice(region, instanceType string) (flo
 	vCPU, memory := e.parseInstanceType(instanceType)
 	
 	// Get vCPU price
-	vCPUPrice, err := e.getPriceFromAPI("AmazonECS", region, map[string]string{
-		"servicecode":   "AmazonECS",
-		"productFamily": "Compute",
-		"usagetype":     fmt.Sprintf("%s-Fargate-vCPU", e.getRegionCode(region)),
-	})
-	if err != nil {
-		return 0, err
+	var vCPUPrice float64
+	var err error
+	
+	// Try DB cache first
+	if e.pricingCache != nil {
+		data, err := e.pricingCache.GetSpecificPricing(region, "AmazonECS", "Compute", fmt.Sprintf("%s-Fargate-vCPU", e.getRegionCode(region)))
+		if err == nil {
+			vCPUPrice = data.PricePerHour
+		}
+	}
+
+	if vCPUPrice == 0 {
+		vCPUPrice, err = e.getPriceFromAPI("AmazonECS", region, map[string]string{
+			"servicecode":   "AmazonECS",
+			"productFamily": "Compute",
+			"usagetype":     fmt.Sprintf("%s-Fargate-vCPU", e.getRegionCode(region)),
+		})
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	// Get memory price
-	memoryPrice, err := e.getPriceFromAPI("AmazonECS", region, map[string]string{
-		"servicecode":   "AmazonECS",
-		"productFamily": "Compute",
-		"usagetype":     fmt.Sprintf("%s-Fargate-GB", e.getRegionCode(region)),
-	})
-	if err != nil {
-		return 0, err
+	var memoryPrice float64
+	if e.pricingCache != nil {
+		data, err := e.pricingCache.GetSpecificPricing(region, "AmazonECS", "Compute", fmt.Sprintf("%s-Fargate-GB", e.getRegionCode(region)))
+		if err == nil {
+			memoryPrice = data.PricePerHour
+		}
+	}
+
+	if memoryPrice == 0 {
+		memoryPrice, err = e.getPriceFromAPI("AmazonECS", region, map[string]string{
+			"servicecode":   "AmazonECS",
+			"productFamily": "Compute",
+			"usagetype":     fmt.Sprintf("%s-Fargate-GB", e.getRegionCode(region)),
+		})
+		if err != nil {
+			return 0, err
+		}
 	}
 
 	// Calculate monthly cost (assuming 24/7 usage)

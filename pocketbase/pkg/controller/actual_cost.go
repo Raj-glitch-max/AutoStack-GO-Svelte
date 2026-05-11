@@ -11,6 +11,7 @@ import (
 	"github.com/pocketbase/pocketbase/models"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/aws"
 	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/cache"
+	"github.com/Raj-glitch-max/AutoStack-GO-Svelte/pkg/notifications"
 )
 
 // ActualCostController handles actual cost endpoints
@@ -21,8 +22,8 @@ type ActualCostController struct {
 }
 
 // NewActualCostController creates a new actual cost controller
-func NewActualCostController(app core.App) (*ActualCostController, error) {
-	costFetcher, err := aws.NewActualCostFetcher(app)
+func NewActualCostController(app core.App, emailService *notifications.EmailService) (*ActualCostController, error) {
+	costFetcher, err := aws.NewActualCostFetcher(app, emailService)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create cost fetcher: %w", err)
 	}
@@ -102,7 +103,7 @@ func (acc *ActualCostController) GetActualCost(c echo.Context) error {
 	}
 	
 	// Verify deployment exists and user has access
-	deployment, err := acc.app.Dao().FindRecordById("deployments", deploymentID)
+	deployment, err := acc.app.Dao().FindRecordById("awsDeployments", deploymentID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
 			"error": "Deployment not found",
@@ -224,7 +225,7 @@ func (acc *ActualCostController) RefreshActualCost(c echo.Context) error {
 	}
 	
 	// Verify deployment exists
-	deployment, err := acc.app.Dao().FindRecordById("deployments", deploymentID)
+	deployment, err := acc.app.Dao().FindRecordById("awsDeployments", deploymentID)
 	if err != nil {
 		return c.JSON(http.StatusNotFound, map[string]string{
 			"error": "Deployment not found",
