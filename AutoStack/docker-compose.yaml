@@ -1,0 +1,16 @@
+services:
+  one-click-unbr:
+    image: ghcr.io/janlauber/one-click:latest
+    ports:
+      - "8090:8090"
+    environment:
+      - LOCAL=true
+      - LOCAL_KUBECONFIG_FILE=/root/.kube/config
+      # Note: Replace the values from the actual configMap `one-click-config` or provide the env variables directly here
+    volumes:
+      - one-click-data:/app/one-click/pb_data
+      - C:/Users/Pranav/.kube/config-docker:/root/.kube/config
+    restart: always
+
+volumes:
+  one-click-data:
