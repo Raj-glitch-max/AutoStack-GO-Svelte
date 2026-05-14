@@ -17,6 +17,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strconv"
@@ -81,6 +82,21 @@ func shouldDispatchDeploy(row map[string]interface{}) bool {
 func shouldDispatchDestroy(row map[string]interface{}) bool {
 	status, _ := row["status"].(string)
 	if status != "deleting" {
+		return false
+	}
+	currentOp, _ := row["current_operation"].(string)
+	return currentOp == ""
+}
+
+// shouldDispatchRollback returns true when the target has been placed into
+// status="rolling_back" with no in-flight operation. The operator sets
+// rolling_back via the API; the reconciler consumes it here.
+//
+// Phase 3.2: rollback is a capability-gated operation. The dispatch function
+// (dispatchRollback) checks CapRollback before calling the provider.
+func shouldDispatchRollback(row map[string]interface{}) bool {
+	status, _ := row["status"].(string)
+	if status != "rolling_back" {
 		return false
 	}
 	currentOp, _ := row["current_operation"].(string)
@@ -152,6 +168,13 @@ func (r *Reconciler) dispatchDeploy(
 		log.Printf("[DISPATCH_OP_CREATE_ERR] cycle=%s target=%s error=%v", cycleID, targetID, err)
 		return reconcileFailed
 	}
+	// ExecStage: operation created; not yet claimed. Stage = QUEUED.
+	setExecStage(r.app, opID, "", ExecStageQueued)
+	// Phase 3.5: persist the full deploy spec snapshot as the immutable
+	// deploy-time truth baseline. Captured BEFORE the provider call so it
+	// survives provider failures and is available for drift detection,
+	// rollback target reconstruction, and incident explanation.
+	r.setDeployedSpec(opID, spec)
 
 	// 3. Atomic CAS: take the target only if it is still pending with no
 	//    in-flight operation. This is the load-bearing safety check.
@@ -159,20 +182,28 @@ func (r *Reconciler) dispatchDeploy(
 	if err != nil {
 		log.Printf("[DISPATCH_CLAIM_ERR] cycle=%s target=%s error=%v", cycleID, targetID, err)
 		r.cancelOperation(opID, "claim CAS failed: "+err.Error())
+		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
 		return reconcileFailed
 	}
 	if claimed != claimSucceeded {
 		log.Printf("[DISPATCH_CLAIM_SKIP] cycle=%s target=%s reason=race_lost", cycleID, targetID)
 		r.cancelOperation(opID, "another reconciler won the claim")
+		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
 		// Phase 2.7: forensic history for the cancelled attempt so the
 		// timeline reflects "we tried, lost the race". Brief; no
 		// to_revision since we never reached the provider.
-		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", "dispatch race lost; operation cancelled", targetProvider)
+		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", "dispatch race lost; operation cancelled", targetProvider, opID, "dispatch-race-lost")
 		return reconcileSkipped
 	}
 
-	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s rollout_revision=%s action=%s", cycleID, targetID, opID, rolloutRevision, historyAction)
-	r.writeHistory(rolloutID, targetID, historyAction, "in_progress", "", "", "", targetProvider)
+	// ExecStage: CAS claimed. Stage = DISPATCHING (about to call provider).
+	setExecStage(r.app, opID, ExecStageQueued, ExecStageDispatching)
+
+	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s rollout_revision=%s action=%s pod=%s", cycleID, targetID, opID, rolloutRevision, historyAction, currentPodIdentity())
+	r.writeHistory(rolloutID, targetID, historyAction, "in_progress", "", "", "", targetProvider, opID, "")
+	if r.metrics != nil {
+		r.metrics.IncDeployDispatched()
+	}
 
 	// Dispatcher-local panic recovery. If anything below panics — provider
 	// call, completeOperation, release — we MUST still mark the op failed
@@ -185,7 +216,7 @@ func (r *Reconciler) dispatchDeploy(
 			log.Printf("[DISPATCH_PANIC] cycle=%s target=%s op=%s panic=%v", cycleID, targetID, opID, rec)
 			r.completeOperation(opID, "failed", "dispatcher panic")
 			r.releaseTarget(opID, targetID, "creating", "error", "dispatcher panic")
-			r.writeHistory(rolloutID, targetID, historyAction, "failed", "", preClaimExternalID, "dispatcher panic", targetProvider)
+			r.writeHistory(rolloutID, targetID, historyAction, "failed", "", preClaimExternalID, "dispatcher panic", targetProvider, opID, "dispatcher-panic")
 			resultOut = reconcileFailed
 		}
 	}()
@@ -205,6 +236,8 @@ func (r *Reconciler) dispatchDeploy(
 	log.Printf("[DEPLOY_START] cycle=%s target=%s operation=%s image=%s/%s:%s region=%s",
 		cycleID, targetID, opID, spec.Image.Registry, spec.Image.Repository, spec.Image.Tag, account.Region)
 	startedAt := time.Now()
+	// ExecStage: provider Deploy() call is imminent. Stage = PROVISIONING.
+	setExecStage(r.app, opID, ExecStageDispatching, ExecStageProvisioning)
 
 	result, deployErr := p.Deploy(deployCtx, account, spec)
 
@@ -235,8 +268,9 @@ func (r *Reconciler) dispatchDeploy(
 		// not a stale outcome; reset the stale counter so we don't carry
 		// stale-loop state across unrelated failures.
 		msg := sanitizeError(deployErr.Error())
+		setExecStage(r.app, opID, ExecStageProvisioning, ExecStageFailed)
 		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", msg, targetProvider)
+		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", msg, targetProvider, opID, "")
 		r.releaseTarget(opID, targetID, "creating", "error", msg)
 		r.recordTargetFailureWithCategory(targetID, ClassifyError(deployErr.Error()))
 		r.clearStaleCount(targetID)
@@ -246,8 +280,9 @@ func (r *Reconciler) dispatchDeploy(
 		// Deploy returned (result, nil) but result.Status=error: provider
 		// observed a Ready=FAILED condition. Same treatment as a hard error.
 		msg := sanitizeError(result.Message)
+		setExecStage(r.app, opID, ExecStageProvisioning, ExecStageFailed)
 		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, msg, targetProvider)
+		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, msg, targetProvider, opID, "")
 		r.releaseTargetWithExternal(opID, targetID, "creating", "error", result.ExternalID, "", msg)
 		r.recordTargetFailureWithCategory(targetID, FailurePermanent)
 		r.clearStaleCount(targetID)
@@ -267,8 +302,9 @@ func (r *Reconciler) dispatchDeploy(
 		if staleN >= staleThreshold {
 			msg := fmt.Sprintf("pathological stale-spec loop after %d consecutive succeeded_stale outcomes; operator action required", staleN)
 			log.Printf("[DEPLOY_STALE_LOOP_HOLD] cycle=%s target=%s operation=%s stale_count=%d", cycleID, targetID, opID, staleN)
+			setExecStage(r.app, opID, ExecStageProvisioning, ExecStageFailed)
 			r.completeOperation(opID, "succeeded_stale", msg)
-			r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, msg, targetProvider)
+			r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, msg, targetProvider, opID, "stale-spec-loop")
 			r.releaseTargetWithExternal(opID, targetID, "creating", "error", result.ExternalID, "", msg)
 			// Don't clear staleCount here: it stays high until operator
 			// respec triggers the pending-entry clear. This prevents an
@@ -276,8 +312,9 @@ func (r *Reconciler) dispatchDeploy(
 			return reconcileFailed
 		}
 		log.Printf("[DEPLOY_STALE] cycle=%s target=%s operation=%s stale_count=%d — rollout moved during deploy", cycleID, targetID, opID, staleN)
+		setExecStage(r.app, opID, ExecStageProvisioning, ExecStageFailed)
 		r.completeOperation(opID, "succeeded_stale", "rollout updated during deploy; re-dispatching next cycle")
-		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, "stale spec", targetProvider)
+		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, "stale spec", targetProvider, opID, "stale-spec")
 		r.releaseTargetWithExternal(opID, targetID, "creating", "pending", result.ExternalID, "", "")
 		return reconcileFailed
 
@@ -289,15 +326,38 @@ func (r *Reconciler) dispatchDeploy(
 		//
 		// Phase 2.3: when pending_destroy is set, postSuccessStatus is
 		// `deleting` and the next reconcile cycle will dispatch Destroy.
+		//
+		// ExecStage: Phase 3.1 providers execute provisioning+verifying
+		// atomically inside Deploy(). Advance through both stages now so the
+		// operation ends at READY — the canonical terminal-success stage.
+		// Write checkpoint before advancing so it lands while stage=PROVISIONING.
+		// Phase 3.4 (SC-1): write rollout_revision into checkpoint_data alongside
+		// provider-native keys (task_def_arn, etc.). This creates the deployed_spec
+		// baseline: the reconciler can now compare rollout.updated_at vs
+		// last_deployed_revision on the target to detect spec drift without a
+		// full spec-content comparison.
+		checkpointWithRevision := result.CheckpointData
+		if checkpointWithRevision == nil {
+			checkpointWithRevision = make(map[string]interface{})
+		}
+		checkpointWithRevision["rollout_revision"] = rolloutRevision
+		r.setCheckpointData(opID, checkpointWithRevision)
+		setExecStage(r.app, opID, ExecStageProvisioning, ExecStageVerifying)
+		setExecStage(r.app, opID, ExecStageVerifying, ExecStageReady)
 		r.completeOperation(opID, "succeeded", "deploy completed")
-		r.writeHistory(rolloutID, targetID, historyAction, "success", "", result.ExternalID, "", targetProvider)
+		r.writeHistory(rolloutID, targetID, historyAction, "success", "", result.ExternalID, "", targetProvider, opID, "")
 		r.releaseTargetWithExternal(opID, targetID, "creating", postSuccessStatus, result.ExternalID, result.ExternalID, postSuccessMessage)
+		// Phase 3.4: record the deployed revision on the target so future
+		// GetStatus ticks can detect spec drift by comparing rollout.updated_at
+		// vs last_deployed_revision. Written after release so the target row
+		// already reflects the new status.
+		r.setLastDeployedRevision(targetID, rolloutRevision)
 		// Phase 2.7: forensic history when sweep reclaimed ownership
 		// while we were running. The dispatcher actually saw a success
 		// provider-side; the sweep already wrote an "abandoned" history
 		// row. This row gives operators the dispatcher's view.
 		if ok, present := r.releaseStillOwner(opID); present && !ok {
-			r.writeOwnershipLostHistory(rolloutID, targetID, historyAction, "success", result.ExternalID, targetProvider)
+			r.writeOwnershipLostHistory(rolloutID, targetID, historyAction, "success", result.ExternalID, targetProvider, opID)
 		}
 		if pendingDestroy {
 			r.clearPendingDestroy(targetID)
@@ -305,6 +365,9 @@ func (r *Reconciler) dispatchDeploy(
 		}
 		r.clearTargetFailure(targetID)
 		r.clearStaleCount(targetID)
+		if r.metrics != nil {
+			r.metrics.IncDeploySucceeded()
+		}
 		return reconcileSuccess
 	}
 }
@@ -327,24 +390,33 @@ func (r *Reconciler) dispatchDestroy(
 		log.Printf("[DISPATCH_OP_CREATE_ERR] cycle=%s target=%s error=%v", cycleID, targetID, err)
 		return reconcileFailed
 	}
+	// ExecStage: operation created; not yet claimed. Stage = QUEUED.
+	setExecStage(r.app, opID, "", ExecStageQueued)
 
 	claimed, err := r.claimTarget(targetID, opID)
 	if err != nil || claimed != claimSucceeded {
 		r.cancelOperation(opID, "destroy claim lost or errored")
+		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
 		// Phase 2.7: forensic history for cancelled destroy attempts.
-		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", externalID, "destroy claim lost or errored", targetProvider)
+		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", externalID, "destroy claim lost or errored", targetProvider, opID, "")
 		return reconcileSkipped
 	}
 
-	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s kind=destroy", cycleID, targetID, opID)
-	r.writeHistory(rolloutID, targetID, "deleted", "in_progress", "", "", "", targetProvider)
+	// ExecStage: CAS claimed. Stage = DISPATCHING (about to call provider).
+	setExecStage(r.app, opID, ExecStageQueued, ExecStageDispatching)
+
+	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s kind=destroy pod=%s", cycleID, targetID, opID, currentPodIdentity())
+	r.writeHistory(rolloutID, targetID, "deleted", "in_progress", "", "", "", targetProvider, opID, "")
+	if r.metrics != nil {
+		r.metrics.IncDestroyDispatched()
+	}
 
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.Printf("[DISPATCH_PANIC] cycle=%s target=%s op=%s kind=destroy panic=%v", cycleID, targetID, opID, rec)
 			r.completeOperation(opID, "failed", "dispatcher panic")
 			r.releaseTarget(opID, targetID, "deleting", "error", "dispatcher panic")
-			r.writeHistory(rolloutID, targetID, "deleted", "failed", "", "", "dispatcher panic", targetProvider)
+			r.writeHistory(rolloutID, targetID, "deleted", "failed", "", "", "dispatcher panic", targetProvider, opID, "dispatcher-panic")
 			resultOut = reconcileFailed
 		}
 	}()
@@ -369,23 +441,169 @@ func (r *Reconciler) dispatchDestroy(
 		Region:     account.Region,
 	}
 
+	// ExecStage: provider Destroy() initiation is imminent. Stage = DELETING.
+	setExecStage(r.app, opID, ExecStageDispatching, ExecStageDeleting)
+
 	if err := p.Destroy(destroyCtx, account, target); err != nil {
 		msg := sanitizeError(err.Error())
+		setExecStage(r.app, opID, ExecStageDeleting, ExecStageFailed)
 		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", "", msg, targetProvider)
+		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", "", msg, targetProvider, opID, "")
 		r.releaseTarget(opID, targetID, "deleting", "error", msg)
 		r.recordTargetFailureWithCategory(targetID, ClassifyError(err.Error()))
 		return reconcileFailed
 	}
 
-	r.completeOperation(opID, "succeeded", "destroy completed")
-	r.writeHistory(rolloutID, targetID, "deleted", "success", "", "", "", targetProvider)
+	// Phase 3.3: destroy-confirm is owned by the reconciler, not the provider.
+	// Poll GetStatus until deletion is confirmed or the window elapses.
+	// On timeout, exec stage moves to AMBIGUOUS and target is released to
+	// "ambiguous" so the next GetStatus tick can re-confirm.
+	providerName := providerToProviderName(account.Provider)
+	if err := r.confirmDestroyInReconciler(destroyCtx, p, account, target, providerName, cycleID, opID); err != nil {
+		msg := sanitizeError(err.Error())
+		setExecStage(r.app, opID, ExecStageDeleting, ExecStageAmbiguous)
+		r.completeOperation(opID, "failed", "destroy initiated but confirmation timed out: "+msg)
+		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", "", "destroy confirmation timeout: "+msg, targetProvider, opID, "destroy-confirm-timeout")
+		r.releaseTarget(opID, targetID, "deleting", "ambiguous", "destroy confirmation timed out: "+msg)
+		// Do NOT record as target failure — ambiguous is not a clean error;
+		// GetStatus will resolve it on the next tick.
+		return reconcileFailed
+	}
+
+	// ExecStage: reconciler confirmed deletion. Stage = DELETED (terminal).
+	setExecStage(r.app, opID, ExecStageDeleting, ExecStageDeleted)
+	r.completeOperation(opID, "succeeded", "destroy completed and confirmed")
+	r.writeHistory(rolloutID, targetID, "deleted", "success", "", "", "", targetProvider, opID, "")
 	r.releaseTarget(opID, targetID, "deleting", "deleted", "destroy completed")
 	// On successful destroy, clear pending_destroy in case it was set by a
 	// late-arriving intent during the destroy itself (paranoid; usually
 	// already false).
 	r.clearPendingDestroy(targetID)
 	r.clearTargetFailure(targetID)
+	if r.metrics != nil {
+		r.metrics.IncDestroySucceeded()
+	}
+	return reconcileSuccess
+}
+
+// dispatchRollback is the Rollback-side mirror of dispatchDeploy/dispatchDestroy.
+// It shares the same Phase 2.1 hardening: opID threaded into release, heartbeat
+// sidecar, dispatcher-local panic recovery, and exec_stage wiring.
+//
+// Capability gate: the Provider must declare Supported=true for CapRollback
+// (dispatch_tables.go). If not, we immediately flip the target to `error`
+// with a clear explanation — the operator must use a manual re-deploy instead.
+//
+// ExecStage path: QUEUED → DISPATCHING → ROLLING_BACK → ROLLED_BACK | FAILED | AMBIGUOUS
+//
+// Phase 3.2: AMBIGUOUS on rollback timeout is declared but not yet implemented
+// (Provider.Rollback is expected to block until confirmed in Phase 3.1 providers).
+// A future provider that returns partial rollback signals will drive that path.
+func (r *Reconciler) dispatchRollback(
+	ctx context.Context,
+	p providers.Provider,
+	account *providers.CloudAccount,
+	targetID, rolloutID, externalID, targetRevision string,
+	cycleID, targetProvider string,
+) (resultOut reconcileResult) {
+	// Capability gate: refuse rollback if the provider doesn't support it.
+	providerName := providerToProviderName(account.Provider)
+	if !supportsCapability(providerName, providers.CapRollback) {
+		notes := capabilityNotes(providerName, providers.CapRollback)
+		capErr := providers.ErrCapabilityUnavailable{
+			Cap:      providers.CapRollback,
+			Provider: providerName,
+			Notes:    notes,
+		}
+		log.Printf("[ROLLBACK_CAPABILITY_REFUSED] cycle=%s target=%s provider=%s reason=%v", cycleID, targetID, providerName, capErr.Error())
+		r.markTargetError(targetID, "rollback not supported by provider: "+capErr.Error())
+		return reconcileFailed
+	}
+
+	opID, err := r.createOperation(targetID, "rollback", targetRevision)
+	if err != nil {
+		log.Printf("[DISPATCH_OP_CREATE_ERR] cycle=%s target=%s kind=rollback error=%v", cycleID, targetID, err)
+		return reconcileFailed
+	}
+	// ExecStage: operation created; not yet claimed. Stage = QUEUED.
+	setExecStage(r.app, opID, "", ExecStageQueued)
+
+	claimed, err := r.claimTarget(targetID, opID)
+	if err != nil || claimed != claimSucceeded {
+		r.cancelOperation(opID, "rollback claim lost or errored")
+		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
+		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", externalID, "rollback claim lost or errored", targetProvider, opID, "")
+		return reconcileSkipped
+	}
+
+	// ExecStage: CAS claimed. Stage = DISPATCHING.
+	setExecStage(r.app, opID, ExecStageQueued, ExecStageDispatching)
+
+	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s kind=rollback to_revision=%s pod=%s", cycleID, targetID, opID, targetRevision, currentPodIdentity())
+	r.writeHistory(rolloutID, targetID, "rollback", "in_progress", "", "", "", targetProvider, opID, "operator-rollback")
+	if r.metrics != nil {
+		r.metrics.IncRollbackDispatched()
+	}
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			log.Printf("[DISPATCH_PANIC] cycle=%s target=%s op=%s kind=rollback panic=%v", cycleID, targetID, opID, rec)
+			r.completeOperation(opID, "failed", "dispatcher panic")
+			r.releaseTarget(opID, targetID, "rolling_back", "error", "dispatcher panic")
+			r.writeHistory(rolloutID, targetID, "rollback", "failed", "", "", "dispatcher panic", targetProvider, opID, "dispatcher-panic")
+			resultOut = reconcileFailed
+		}
+	}()
+
+	rollbackCtx, cancel := context.WithTimeout(ctx, DeployTimeout)
+	defer cancel()
+
+	go r.heartbeat(ctx, opID)
+
+	target := &providers.DeploymentTarget{
+		ID:         targetID,
+		ExternalID: externalID,
+		Provider:   account.Provider,
+		Region:     account.Region,
+	}
+
+	// ExecStage: provider Rollback() call is imminent. Stage = ROLLING_BACK.
+	setExecStage(r.app, opID, ExecStageDispatching, ExecStageRollingBack)
+
+	result, rollbackErr := p.Rollback(rollbackCtx, account, target, targetRevision)
+	if rollbackErr != nil {
+		msg := sanitizeError(rollbackErr.Error())
+		setExecStage(r.app, opID, ExecStageRollingBack, ExecStageFailed)
+		r.completeOperation(opID, "failed", msg)
+		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", "", msg, targetProvider, opID, "")
+		r.releaseTarget(opID, targetID, "rolling_back", "error", msg)
+		r.recordTargetFailureWithCategory(targetID, ClassifyError(rollbackErr.Error()))
+		return reconcileFailed
+	}
+	// Provider-observed failure status (e.g., revision not found).
+	if result != nil && result.Status == "error" {
+		msg := sanitizeError(result.Message)
+		setExecStage(r.app, opID, ExecStageRollingBack, ExecStageFailed)
+		r.completeOperation(opID, "failed", msg)
+		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", result.ExternalID, msg, targetProvider, opID, "")
+		r.releaseTargetWithExternal(opID, targetID, "rolling_back", "error", result.ExternalID, "", msg)
+		r.recordTargetFailureWithCategory(targetID, FailurePermanent)
+		return reconcileFailed
+	}
+
+	// ExecStage: Rollback() confirmed. Stage = ROLLED_BACK (terminal).
+	rolledToRevision := targetRevision
+	if result != nil && result.ExternalID != "" {
+		rolledToRevision = result.ExternalID
+	}
+	setExecStage(r.app, opID, ExecStageRollingBack, ExecStageRolledBack)
+	r.completeOperation(opID, "succeeded", "rollback completed")
+	r.writeHistory(rolloutID, targetID, "rollback", "success", targetRevision, rolledToRevision, "", targetProvider, opID, "operator-rollback")
+	r.releaseTarget(opID, targetID, "rolling_back", "rolled_back", "rollback completed")
+	r.clearTargetFailure(targetID)
+	if r.metrics != nil {
+		r.metrics.IncRollbackSucceeded()
+	}
 	return reconcileSuccess
 }
 
@@ -409,7 +627,122 @@ func (r *Reconciler) clearPendingDestroy(targetID string) {
 	}
 }
 
+// confirmDestroyInReconciler polls Provider.GetStatus until the target
+// reports status="deleted" or the confirmation window elapses.
+//
+// Phase 3.3 destroy-confirm extraction: the provider's Destroy() method
+// now only initiates the delete (drain + service deletion). The reconciler
+// owns the confirmation loop so that timeout policy, ambiguity semantics,
+// and history events are uniform across all providers.
+//
+// The poll interval is fixed at 5s (matching the provider-internal confirm.go
+// constant). The timeout comes from the provider's CapDestroyConfirmation
+// UncertaintyP99 via destroyConfirmDispatch(). An unrecognised provider
+// semantic fails safe (returns error; target stays in ambiguous state).
+//
+// Returns nil on confirmed deletion. Returns a descriptive error on timeout
+// or on an unrecognised semantic — the caller must set exec stage to
+// AMBIGUOUS and release the target to "ambiguous".
+func (r *Reconciler) confirmDestroyInReconciler(
+	ctx context.Context,
+	p providers.Provider,
+	account *providers.CloudAccount,
+	target *providers.DeploymentTarget,
+	providerName, cycleID, opID string,
+) error {
+	semantic, timeout, err := destroyConfirmDispatch(providerName)
+	if err != nil {
+		return fmt.Errorf("destroy-confirm dispatch table error: %w", err)
+	}
+	if semantic == "none" || timeout == 0 {
+		// Provider has no destroy confirmation; treat initiation as deletion.
+		return nil
+	}
+
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	const pollInterval = 5 * time.Second
+	ticker := time.NewTicker(pollInterval)
+	defer ticker.Stop()
+
+	log.Printf("[DESTROY_CONFIRM_START] cycle=%s op=%s provider=%s semantic=%s timeout=%s",
+		cycleID, opID, providerName, semantic, timeout)
+
+	for {
+		select {
+		case <-pollCtx.Done():
+			return fmt.Errorf("destroy confirmation timed out after %s (semantic=%s)", timeout, semantic)
+		case <-ticker.C:
+			ts, err := p.GetStatus(pollCtx, account, target)
+			if err != nil {
+				log.Printf("[DESTROY_CONFIRM_POLL_ERR] cycle=%s op=%s err=%v — continuing poll", cycleID, opID, err)
+				continue
+			}
+			if ts != nil && ts.Status == "deleted" {
+				log.Printf("[DESTROY_CONFIRM_OK] cycle=%s op=%s semantic=%s", cycleID, opID, semantic)
+				return nil
+			}
+			log.Printf("[DESTROY_CONFIRM_POLL] cycle=%s op=%s status=%s — not yet deleted", cycleID, opID, ts.Status)
+		}
+	}
+}
+
+// setCheckpointData writes provider-specific checkpoint state to the
+// operations.checkpoint_data JSON column. Called at exec stage transitions
+// to make provider-internal state visible to operators.
+//
+// Phase 3.2 behaviour: data is WRITTEN for observability but NOT READ for
+// continuation — restart uses the mark-failed-redispatch pattern. Phase 4
+// will add smart continuation from checkpoint.
+//
+// Best-effort: errors are logged but do not propagate.
+func (r *Reconciler) setCheckpointData(opID string, data map[string]interface{}) {
+	if len(data) == 0 {
+		return
+	}
+	j, err := json.Marshal(data)
+	if err != nil {
+		log.Printf("[CHECKPOINT_MARSHAL_ERR] op=%s err=%v", opID, err)
+		return
+	}
+	_, err = r.app.Dao().DB().NewQuery(
+		"UPDATE operations SET checkpoint_data = {:data}, updated_at = {:ts} WHERE id = {:id}",
+	).Bind(dbx.Params{
+		"data": j,
+		"ts":   time.Now().UTC().Format(time.RFC3339),
+		"id":   opID,
+	}).Execute()
+	if err != nil {
+		log.Printf("[CHECKPOINT_WRITE_ERR] op=%s err=%v", opID, err)
+	}
+}
+
+// setLastDeployedRevision updates deployment_targets.last_deployed_revision
+// to the given rolloutRevision after a successful deploy. This is the Phase 3.4
+// (SC-1) reconciliation baseline: future GetStatus ticks compare the desired
+// rollout.updated_at against this value to detect spec drift.
+//
+// Best-effort: errors are logged but do not propagate. A missing write means
+// drift_state will stay "unknown" for this target until the next successful deploy.
+func (r *Reconciler) setLastDeployedRevision(targetID, rolloutRevision string) {
+	if targetID == "" || rolloutRevision == "" {
+		return
+	}
+	_, err := r.app.Dao().DB().NewQuery(
+		"UPDATE deployment_targets SET last_deployed_revision = {:rev} WHERE id = {:id}",
+	).Bind(dbx.Params{
+		"rev": rolloutRevision,
+		"id":  targetID,
+	}).Execute()
+	if err != nil {
+		log.Printf("[SET_DEPLOYED_REVISION_ERR] target=%s err=%v", targetID, err)
+	}
+}
+
 // createOperation inserts a new in_progress operation row and returns its ID.
+// Phase 3.8: stamps owned_by_pod with the current process's identity for
+// SC-5 ownership forensic visibility.
 func (r *Reconciler) createOperation(targetID, kind, rolloutRevision string) (string, error) {
 	col, err := r.app.Dao().FindCollectionByNameOrId("operations")
 	if err != nil {
@@ -423,10 +756,41 @@ func (r *Reconciler) createOperation(targetID, kind, rolloutRevision string) (st
 	rec.Set("started_at", now)
 	rec.Set("updated_at", now)
 	rec.Set("rollout_revision", rolloutRevision)
+	// Phase 3.8: ownership stamp. Identity initialized at Start() time.
+	rec.Set("owned_by_pod", string(currentPodIdentity()))
 	if err := r.app.Dao().SaveRecord(rec); err != nil {
 		return "", err
 	}
 	return rec.Id, nil
+}
+
+// setDeployedSpec persists the Phase 3.5 deployed_spec JSON snapshot on
+// the operation. Called from dispatchDeploy after spec construction so
+// the spec is captured BEFORE the provider call — preserving the deploy-time
+// truth baseline even if Deploy() fails.
+//
+// Best-effort: errors are logged but do not propagate. A missing
+// deployed_spec means full-content drift detection is unavailable for
+// this operation; revision-based drift detection still functions.
+func (r *Reconciler) setDeployedSpec(opID string, spec *providers.DeploySpec) {
+	if opID == "" || spec == nil {
+		return
+	}
+	j, err := json.Marshal(spec)
+	if err != nil {
+		log.Printf("[DEPLOYED_SPEC_MARSHAL_ERR] op=%s err=%v", opID, err)
+		return
+	}
+	_, err = r.app.Dao().DB().NewQuery(
+		"UPDATE operations SET deployed_spec = {:spec}, updated_at = {:ts} WHERE id = {:id}",
+	).Bind(dbx.Params{
+		"spec": j,
+		"ts":   time.Now().UTC().Format(time.RFC3339),
+		"id":   opID,
+	}).Execute()
+	if err != nil {
+		log.Printf("[DEPLOYED_SPEC_WRITE_ERR] op=%s err=%v", opID, err)
+	}
 }
 
 // claimTarget performs the atomic CAS that grants this reconciler
@@ -607,7 +971,7 @@ func (r *Reconciler) releaseStillOwner(opID string) (bool, bool) {
 // op mid-flight). Phase 2.7: closes the lineage gap where the
 // dispatcher's actual provider observation was previously invisible.
 // Caller passes the dispatcher's intent (action) and observed outcome.
-func (r *Reconciler) writeOwnershipLostHistory(rolloutID, targetID, action, observedOutcome, externalID, targetProvider string) {
+func (r *Reconciler) writeOwnershipLostHistory(rolloutID, targetID, action, observedOutcome, externalID, targetProvider, opID string) {
 	if rolloutID == "" || targetID == "" {
 		return
 	}
@@ -618,7 +982,7 @@ func (r *Reconciler) writeOwnershipLostHistory(rolloutID, targetID, action, obse
 	if externalID != "" {
 		msg += "; external_id=" + externalID
 	}
-	r.writeHistory(rolloutID, targetID, action, "failed", "", externalID, msg, targetProvider)
+	r.writeHistory(rolloutID, targetID, action, "failed", "", externalID, msg, targetProvider, opID, "sweep-ownership-reclaim")
 }
 
 // releaseTargetWithExternal additionally writes external_id and current_revision
@@ -702,7 +1066,15 @@ func (r *Reconciler) rolloutMovedSince(rolloutID, rolloutRevision string) bool {
 // writeHistory appends an immutable record to deployment_history. Failures
 // are logged but do not propagate — a write failure here must not roll
 // back the actual deploy.
-func (r *Reconciler) writeHistory(rolloutID, targetID, action, status, fromRevision, toRevision, message, provider string) {
+//
+// Phase 3.3: operationID links the history row to the operations table entry
+// that caused it. Pass the opID where available; pass "" for paths that
+// do not have an operation row (e.g. pre-claim cancel, sweep events).
+//
+// triggeredBy is a human-readable cause string for operator forensics
+// (e.g. "stale-spec-loop", "operator-rollback", "ambiguity-expiry").
+// Pass "" when the cause is implicit from the action field.
+func (r *Reconciler) writeHistory(rolloutID, targetID, action, status, fromRevision, toRevision, message, provider, operationID, triggeredBy string) {
 	col, err := r.app.Dao().FindCollectionByNameOrId("deployment_history")
 	if err != nil {
 		log.Printf("[HISTORY_WRITE_ERR] collection: %v", err)
@@ -727,11 +1099,17 @@ func (r *Reconciler) writeHistory(rolloutID, targetID, action, status, fromRevis
 	if provider != "" {
 		rec.Set("provider", provider)
 	}
+	if operationID != "" {
+		rec.Set("operation_id", operationID)
+	}
+	if triggeredBy != "" {
+		rec.Set("triggered_by", triggeredBy)
+	}
 	if err := r.app.Dao().SaveRecord(rec); err != nil {
 		log.Printf("[HISTORY_WRITE_ERR] save: %v", err)
 		return
 	}
-	log.Printf("[HISTORY_WRITE] target=%s action=%s status=%s", targetID, action, status)
+	log.Printf("[HISTORY_WRITE] target=%s action=%s status=%s op=%s", targetID, action, status, operationID)
 }
 
 // buildDeploySpec parses the YAML manifest stored on the rollout into a

@@ -163,28 +163,71 @@ type DeployResult struct {
 	Status        string
 	Message       string
 	OperationID   string // For tracking in-flight operations
+	// Phase 3.2 (Form B additive): provider-specific state captured at the
+	// end of the Deploy/Rollback call. Written to operations.checkpoint_data
+	// for operator observability and Phase 4 continuation.
+	// Keys are provider-specific; may be nil if the provider does not populate.
+	CheckpointData map[string]interface{}
 }
 
 // TargetStatus contains the current status of a deployment.
 //
-// Phase 3 (Form B additive evolution): ServingRevision was added to
-// distinguish "a revision is ready" from "this revision is receiving
-// traffic." See phase3/provider-contract-evolution.md Change 3. Phase 2
-// callers that ignore the field continue to function unchanged.
+// Phase 3.0 (Form B additive): ServingRevision added. Phase 3.2 (Form B
+// additive): Ambiguous, AmbiguitySource, NativeState, AmbiguityDetail
+// added to carry truthful ambiguity from the provider into the reconciler.
+// All new fields are optional — Phase 2 callers that ignore them continue
+// to function unchanged.
+//
+// See phase3/ambiguity-semantics-model.md for the S-1..S-5 source taxonomy.
 type TargetStatus struct {
-	Status        string
-	Replicas      int
+	Status            string
+	Replicas          int
 	AvailableReplicas int
-	ReadyReplicas int
-	Message       string
-	LastUpdated   time.Time
+	ReadyReplicas     int
+	Message           string
+	LastUpdated       time.Time
 
-	// ServingRevision is the revision currently receiving traffic, when
-	// the provider can report it (Capability C-HealthReporting must be
-	// Supported: true). Empty string means the provider cannot report
-	// it — the caller must NOT infer "no revision serving" from empty;
-	// it means "unreported."
+	// ServingRevision is the revision currently receiving traffic (Phase 3.0).
+	// Empty means "unreported", NOT "no revision serving".
 	ServingRevision string
+
+	// Ambiguous is true when the provider cannot report a certain canonical
+	// status. The reconciler MUST NOT resolve this to a certainty; it must
+	// propagate it to lifecycle_ambiguous on the target row.
+	//
+	// Sources: S-1 (eventual consistency lag beyond window), S-2 (no canonical
+	// mapping), S-4 (confirmation timeout), S-5 (provider silent).
+	// S-3 (capability gap) is reported via ErrCapabilityUnavailable, not here.
+	Ambiguous bool
+
+	// AmbiguitySource is the S-code from the ambiguity-semantics-model.
+	// "S-1", "S-2", "S-4", or "S-5". Empty when Ambiguous=false.
+	AmbiguitySource string
+
+	// NativeState is the provider-native state string, preserved verbatim.
+	// Required when Ambiguous=true (S-2) so the operator can investigate.
+	// Example for ECS: "DRAINING", for Cloud Run: "FAILED_PRECONDITION".
+	NativeState string
+
+	// AmbiguityDetail is a free-text operator-readable explanation.
+	// Required when Ambiguous=true. Surfaces in the UI as a tooltip.
+	AmbiguityDetail string
+
+	// ConfidenceLevel classifies how certain the provider is about this
+	// status observation. Phase 3.4 introduces this so the reconciler can
+	// hold low-confidence observations through the suspicion counter before
+	// writing them as truth.
+	//
+	// Values:
+	//   "high"   — provider has a definitive signal (completed/failed rollout,
+	//               not-found). The reconciler accepts this without suspicion.
+	//   "medium" — provider has a partial signal (in-progress rollout, one
+	//               condition checked). The reconciler may hold one tick.
+	//   "low"    — provider gave ambiguous, conflicting, or incomplete signals.
+	//               The reconciler routes through the suspicion counter.
+	//   ""       — not classified (legacy providers or paths that do not set it).
+	//               Treated as "medium" by the reconciler.
+	ConfidenceLevel string
 }
 
 // TargetMetrics contains resource metrics for a deployment
@@ -417,4 +460,27 @@ type ProviderError struct {
 
 func (e *ProviderError) Error() string {
 	return e.Message
+}
+
+// ErrCapabilityUnavailable is returned by the reconciler and controller
+// when a caller requests an action that the provider does not support.
+// This is a structured refusal: it carries the capability key, the
+// provider name, and the Notes from the capability profile so the caller
+// can surface "this provider does not support X" with context.
+//
+// Callers must check this BEFORE invoking provider methods whose
+// CapabilityKey is Supported=false, per provider-capability-negotiation.md
+// §The Defensive Pattern.
+type ErrCapabilityUnavailable struct {
+	Cap      CapabilityKey
+	Provider string
+	Notes    string
+}
+
+func (e ErrCapabilityUnavailable) Error() string {
+	msg := "provider " + e.Provider + " does not support capability " + string(e.Cap)
+	if e.Notes != "" {
+		msg += ": " + e.Notes
+	}
+	return msg
 }

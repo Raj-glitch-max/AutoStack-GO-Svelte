@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/janlauber/one-click/pkg/providers"
 	"github.com/janlauber/one-click/pkg/providers/cloudrun"
+	"github.com/janlauber/one-click/pkg/providers/ecs"
 	"github.com/janlauber/one-click/pkg/secrets"
 	pb "github.com/pocketbase/pocketbase"
 	"github.com/pocketbase/dbx"
@@ -97,6 +99,17 @@ type Reconciler struct {
 	// `[HEARTBEAT_FAIL_PERSISTENT]` escalation.
 	heartbeatFails  map[string]int
 	heartbeatFailMu sync.Mutex
+
+	// Phase 3.6: in-memory operational metrics. Atomic counters; safe for
+	// concurrent reconciler ticks. Read via /api/v1/reconciler/metrics (if
+	// wired) or via Snapshot() in tests.
+	metrics *Metrics
+
+	// Phase 3.6: per-target cooldown timestamps. When a target hits the
+	// suspicion threshold repeatedly, the reconciler enforces a cooldown
+	// before re-evaluating it — prevents retry-storm pressure on providers.
+	cooldown   map[string]time.Time
+	cooldownMu sync.RWMutex
 }
 
 // staleThreshold is the number of consecutive succeeded_stale outcomes
@@ -118,7 +131,50 @@ func New(app *pb.PocketBase, config Config) *Reconciler {
 		staleCount:     make(map[string]int),
 		releaseOutcome: make(map[string]bool),
 		heartbeatFails: make(map[string]int),
+		metrics:        &Metrics{},
+		cooldown:       make(map[string]time.Time),
 	}
+}
+
+// Metrics returns the in-memory metrics snapshot for the reconciler.
+// Phase 3.6: lightweight, atomic counters. Safe for concurrent reads.
+func (r *Reconciler) Metrics() MetricsSnapshot {
+	if r.metrics == nil {
+		return MetricsSnapshot{}
+	}
+	return r.metrics.Snapshot()
+}
+
+// cooldownActive reports whether a target is currently in a Phase 3.8
+// reconciliation cooldown window. Used to enforce bounded reconciliation
+// economics: a target that repeatedly fails the suspicion guard is
+// rate-limited so we don't burn provider quota in a tight loop.
+//
+// Cooldown duration: 30 seconds, applied when a suspicion guard fires
+// AT threshold (the guard would have promoted; we slow it down instead).
+const reconciliationCooldown = 30 * time.Second
+
+func (r *Reconciler) cooldownActive(targetID string) bool {
+	r.cooldownMu.RLock()
+	until, ok := r.cooldown[targetID]
+	r.cooldownMu.RUnlock()
+	if !ok {
+		return false
+	}
+	if time.Now().After(until) {
+		// Expired; clear it lazily.
+		r.cooldownMu.Lock()
+		delete(r.cooldown, targetID)
+		r.cooldownMu.Unlock()
+		return false
+	}
+	return true
+}
+
+func (r *Reconciler) setCooldown(targetID string) {
+	r.cooldownMu.Lock()
+	r.cooldown[targetID] = time.Now().Add(reconciliationCooldown)
+	r.cooldownMu.Unlock()
 }
 
 // Start begins the reconciliation loop.
@@ -142,8 +198,20 @@ func (r *Reconciler) Start() {
 
 	log.Println("Starting cloud reconciler")
 
-	// Register the Cloud Run provider
-	providers.RegisterProvider(providers.ProviderGCPCloudRun, cloudrun.NewProvider())
+	// Phase 3.8: initialize pod identity BEFORE any operation can be claimed.
+	// This identity stamps every operation we own and provides forensic
+	// visibility for the sweep when it reclaims foreign-pod operations.
+	initPodIdentity()
+
+	// Register providers and cache their capability profiles.
+	// Capability caching must happen BEFORE any reconciler tick fires.
+	crProvider := cloudrun.NewProvider()
+	providers.RegisterProvider(providers.ProviderGCPCloudRun, crProvider)
+	cacheCapabilities(providers.ProviderGCPCloudRun, crProvider)
+
+	ecsProvider := ecs.NewProvider()
+	providers.RegisterProvider(providers.ProviderAWSECS, ecsProvider)
+	cacheCapabilities(providers.ProviderAWSECS, ecsProvider)
 
 	// Crash-recovery sweep runs BEFORE we accept any tick. Any operation
 	// left in_progress at this moment belongs to the previous process
@@ -565,6 +633,21 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 		defer cancel()
 		return r.dispatchDestroy(ctx, p, account, targetID, rolloutID, externalID, cycleID, targetProvider)
 	}
+	if shouldDispatchRollback(row) {
+		// Phase 3.3: look up the prior task def ARN from the most recent
+		// succeeded deploy operation's checkpoint_data. If the lookup fails
+		// (no prior deploy, no checkpoint), refuse rollback with a clear error
+		// rather than dispatching with an empty targetRevision.
+		priorTaskDefARN, lookupErr := r.lookupPriorTaskDefARN(targetID)
+		if lookupErr != nil {
+			log.Printf("[ROLLBACK_NO_PRIOR_CHECKPOINT] cycle=%s target=%s err=%v — refusing rollback", cycleID, targetID, lookupErr)
+			r.markTargetError(targetID, "rollback refused: "+lookupErr.Error())
+			return reconcileFailed
+		}
+		ctx, cancel := context.WithTimeout(ctx, DeployTimeout)
+		defer cancel()
+		return r.dispatchRollback(ctx, p, account, targetID, rolloutID, externalID, priorTaskDefARN, cycleID, targetProvider)
+	}
 
 	// Status-poll path.
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -577,10 +660,10 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 		log.Printf("[FAILURE] cycle=%s target=%s category=%s message=%v", cycleID, targetID, category, sanitizedMsg)
 		r.recordTargetFailureWithCategory(targetID, category)
 		// Suspicion tolerance: an `updating` target reporting an error
-		// observation is a likely Cloud Run convergence flap. Refuse the
-		// first such observation; persist `error` only on the second
-		// consecutive one. See noteSuspectError.
-		if previousStatus == "updating" && !r.noteSuspectError(targetID) {
+		// observation may be a provider convergence flap (common in Cloud Run,
+		// possible in ECS). Refuse until the per-provider threshold is reached.
+		// Phase 3 Change 6: threshold derived from CapEventualConsistency.
+		if previousStatus == "updating" && !r.noteSuspectError(targetID, providerName) {
 			log.Printf("[SUSPICION_HOLD] cycle=%s target=%s previous=%s reason=updating_error_first_observation", cycleID, targetID, previousStatus)
 			return reconcileFailed
 		}
@@ -595,13 +678,94 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 		log.Printf("[STATE_TRANSITION] cycle=%s target=%s from=%s to=%s", cycleID, targetID, previousStatus, status.Status)
 	}
 
-	// Same suspicion handling for non-error `updating → error` flips.
-	if previousStatus == "updating" && status.Status == "error" && !r.noteSuspectError(targetID) {
-		log.Printf("[SUSPICION_HOLD] cycle=%s target=%s previous=%s reason=updating_error_first_observation", cycleID, targetID, previousStatus)
-		return reconcileFailed
+	// Phase 3.4: observation guards — mutually exclusive, evaluated in priority order.
+	// Each guard calls noteSuspectError at most once per tick per target.
+	// Guards use early return; only the first matching guard fires.
+	// Phase 3.6: each hold increments a counter for operational visibility.
+	// Phase 3.8: at-threshold promotions trigger a cooldown to bound retry economics.
+	//
+	// Priority:
+	//   1. Forward-progress: hard regression (running→creating) — strongest signal
+	//   2. Stale-read: known eventual-consistency pattern (running→updating)
+	//   3. Low-confidence: provider explicit low-confidence signal on regressions
+	//   4. Existing: updating→error suspicion (Phase 3 Change 6)
+	switch {
+	case !isForwardProgressTransition(previousStatus, status.Status):
+		if !r.noteSuspectError(targetID, providerName) {
+			log.Printf("[FORWARD_PROGRESS_HOLD] cycle=%s target=%s previous=%s provider_reported=%s — regression held pending threshold",
+				cycleID, targetID, previousStatus, status.Status)
+			if r.metrics != nil {
+				r.metrics.IncForwardProgressHold()
+			}
+			return reconcileFailed
+		}
+		log.Printf("[FORWARD_PROGRESS_PROMOTED] cycle=%s target=%s previous=%s provider_reported=%s — threshold reached",
+			cycleID, targetID, previousStatus, status.Status)
+		r.setCooldown(targetID)
+
+	case isLikelyStaleRead(previousStatus, status.Status):
+		if !r.noteSuspectError(targetID, providerName) {
+			log.Printf("[STALE_READ_HOLD] cycle=%s target=%s previous=%s provider_reported=%s confidence=%s",
+				cycleID, targetID, previousStatus, status.Status, status.ConfidenceLevel)
+			if r.metrics != nil {
+				r.metrics.IncStaleReadHold()
+			}
+			return reconcileFailed
+		}
+		log.Printf("[STALE_READ_PROMOTED] cycle=%s target=%s previous=%s provider_reported=%s — threshold reached",
+			cycleID, targetID, previousStatus, status.Status)
+		r.setCooldown(targetID)
+
+	case status.ConfidenceLevel == "low" && previousStatus == "running" && status.Status != "running":
+		if !r.noteSuspectError(targetID, providerName) {
+			log.Printf("[LOW_CONFIDENCE_HOLD] cycle=%s target=%s previous=%s provider_reported=%s — low confidence held",
+				cycleID, targetID, previousStatus, status.Status)
+			if r.metrics != nil {
+				r.metrics.IncLowConfidenceHold()
+			}
+			return reconcileFailed
+		}
+
+	case previousStatus == "updating" && status.Status == "error":
+		if !r.noteSuspectError(targetID, providerName) {
+			log.Printf("[SUSPICION_HOLD] cycle=%s target=%s previous=%s reason=updating_error_first_observation", cycleID, targetID, previousStatus)
+			if r.metrics != nil {
+				r.metrics.IncSuspicionHold()
+			}
+			return reconcileFailed
+		}
+	}
+
+	// Phase 3.6: track provider observation confidence.
+	if r.metrics != nil {
+		r.metrics.IncConfidenceObs(status.ConfidenceLevel)
 	}
 
 	r.updateTargetStatus(targetID, previousStatus, status.Status, status.Message)
+	// Phase 3.2: propagate ambiguity columns from the provider observation.
+	r.applyAmbiguityToTarget(targetID, rolloutID, providerName, account.Provider, status)
+
+	// Phase 3.4: drift detection — compare desired spec revision (rollout.updated_at)
+	// vs last_deployed_revision (baseline set on deploy success).
+	desiredRevision, _ := row["rollout_updated"].(string)
+	lastDeployedRevision, _ := row["last_deployed_revision"].(string)
+	currentDriftState, _ := row["drift_state"].(string)
+	driftState := detectRevisionDrift(desiredRevision, lastDeployedRevision)
+	// Promote suspected_drift to confirmed_drift when the target is in a stable
+	// state (running or error) — meaning the spec changed but convergence has
+	// not been dispatched yet.
+	if driftState == DriftStateSuspected && (status.Status == "running" || status.Status == "error") {
+		driftState = DriftStateConfirmed
+	}
+	if driftState != DriftStateNoDrift && driftState != DriftStateUnknown {
+		log.Printf("[DRIFT_DETECTED] cycle=%s target=%s drift=%s desired=%s deployed=%s",
+			cycleID, targetID, driftState, desiredRevision, lastDeployedRevision)
+	}
+	driftDetail := ""
+	if driftState == DriftStateConfirmed || driftState == DriftStateSuspected {
+		driftDetail = "desired revision " + desiredRevision + " differs from deployed revision " + lastDeployedRevision
+	}
+	r.updateDriftState(targetID, currentDriftState, driftState, driftDetail)
 
 	// Intentionally do NOT propagate status onto the rollout record. See
 	// project-context/reconciler/lifecycle-assumptions.md — `rollouts` has
@@ -755,7 +919,8 @@ func (r *Reconciler) updateTargetStatus(targetID, previousStatus, status, messag
 	}
 
 	if !isAllowedTransition(previousStatus, status) {
-		log.Printf("[TRANSITION_REFUSED] target=%s from=%s to=%s reason=invalid", targetID, previousStatus, status)
+		reason := ForbiddenTargetTransitionReason(previousStatus, status)
+		log.Printf("[TRANSITION_REFUSED] target=%s from=%s to=%s reason=%s", targetID, previousStatus, status, reason)
 		target.Set("last_synced", time.Now().UTC().Format(time.RFC3339))
 		if err := r.app.Dao().SaveRecord(target); err != nil {
 			log.Printf("Failed to update last_synced on target %s: %v", targetID, err)
@@ -774,44 +939,212 @@ func (r *Reconciler) updateTargetStatus(targetID, previousStatus, status, messag
 	}
 }
 
-// isAllowedTransition returns true if a transition from previous → next is
-// permitted under the documented lifecycle. Empty previous (first observation)
-// permits any status. Identical status (no-op) is always permitted.
-//
-// The intentionally conservative cases:
-//   - deleted → anything: refused (a deleted target is terminal)
-//   - running → pending, updating → pending: refused (treat single-observation
-//     "pending" as a transient flap, not as a regression)
-//   - running → creating, updating → creating: refused (same reasoning)
-//
-// All other transitions are permitted; this guard is a tripwire, not a full
-// state machine. Refining it is Phase 2 work.
+// isAllowedTransition delegates to IsAllowedTargetTransition in
+// lifecycle_guards.go. Phase 3.2 replaced the stub implementation with
+// a proper transition table; this wrapper maintains call-site compatibility.
 func isAllowedTransition(previous, next string) bool {
-	if previous == "" || previous == next {
-		return true
+	return IsAllowedTargetTransition(previous, next)
+}
+
+// lookupPriorTaskDefARN finds the task_def_arn from the most recent succeeded
+// deploy operation for targetID that has a non-null checkpoint_data.
+//
+// This is the Phase 3.3 rollback source: when the operator triggers a rollback
+// (status→"rolling_back"), we need the prior task definition ARN to pass to
+// Provider.Rollback(). The ARN is captured in operations.checkpoint_data by
+// the ECS provider during Deploy() (Phase 3.2 checkpoint wiring).
+//
+// Returns the task_def_arn string or a descriptive error if no usable
+// checkpoint exists. The caller must refuse rollback on error.
+func (r *Reconciler) lookupPriorTaskDefARN(targetID string) (string, error) {
+	var rows []map[string]interface{}
+	err := r.app.Dao().DB().
+		Select("checkpoint_data").
+		From("operations").
+		Where(dbx.NewExp(
+			"target = {:tid} AND kind = 'deploy' AND status = 'succeeded' AND checkpoint_data IS NOT NULL AND checkpoint_data != '' AND checkpoint_data != 'null'",
+			dbx.Params{"tid": targetID},
+		)).
+		OrderBy("started_at DESC").
+		Limit(1).
+		All(&rows)
+	if err != nil {
+		return "", fmt.Errorf("checkpoint query failed: %w", err)
 	}
-	if previous == "deleted" {
-		return false
+	if len(rows) == 0 {
+		return "", fmt.Errorf("no prior succeeded deploy with checkpoint_data found for target %s; rollback requires at least one prior deploy", targetID)
 	}
-	if (previous == "running" || previous == "updating") && (next == "pending" || next == "creating") {
-		return false
+
+	// checkpoint_data is a JSON column — could be returned as string or []byte.
+	var checkpointJSON string
+	switch v := rows[0]["checkpoint_data"].(type) {
+	case string:
+		checkpointJSON = v
+	case []byte:
+		checkpointJSON = string(v)
+	default:
+		return "", fmt.Errorf("checkpoint_data has unexpected type %T for target %s", rows[0]["checkpoint_data"], targetID)
 	}
-	return true
+
+	var checkpoint map[string]interface{}
+	if err := json.Unmarshal([]byte(checkpointJSON), &checkpoint); err != nil {
+		return "", fmt.Errorf("checkpoint_data parse failed: %w", err)
+	}
+
+	taskDefARN, ok := checkpoint["task_def_arn"].(string)
+	if !ok || taskDefARN == "" {
+		return "", fmt.Errorf("checkpoint_data for target %s has no task_def_arn (provider may not support checkpoint rollback)", targetID)
+	}
+	return taskDefARN, nil
+}
+
+// updateDriftState writes the drift_state, drift_detected_at, and drift_detail
+// columns on deployment_targets when the drift state changes from the current
+// persisted value. No-ops when the state is unchanged.
+//
+// Phase 3.4: revision-only drift detection. called from reconcileOne GetStatus path.
+// Best-effort: errors are logged but do not propagate.
+func (r *Reconciler) updateDriftState(targetID string, currentPersistedDrift string, state DriftState, detail string) {
+	if currentPersistedDrift == string(state) {
+		return
+	}
+	rec, err := r.app.Dao().FindRecordById("deployment_targets", targetID)
+	if err != nil {
+		log.Printf("[DRIFT_STATE_ERR] target=%s find: %v", targetID, err)
+		return
+	}
+	rec.Set("drift_state", string(state))
+	now := time.Now().UTC().Format(time.RFC3339)
+	switch state {
+	case DriftStateNoDrift, DriftStateUnknown:
+		rec.Set("drift_detected_at", nil)
+		rec.Set("drift_detail", "")
+	default:
+		if rec.GetString("drift_detected_at") == "" {
+			rec.Set("drift_detected_at", now)
+		}
+		if detail != "" {
+			rec.Set("drift_detail", detail)
+		}
+	}
+	if err := r.app.Dao().SaveRecord(rec); err != nil {
+		log.Printf("[DRIFT_STATE_ERR] target=%s save: %v", targetID, err)
+		return
+	}
+	log.Printf("[DRIFT_STATE_CHANGE] target=%s from=%s to=%s", targetID, currentPersistedDrift, state)
+}
+
+// applyAmbiguityToTarget writes or clears the five lifecycle ambiguity columns
+// on deployment_targets based on ts.Ambiguous.
+//
+// When ts.Ambiguous == true:
+//   - lifecycle_ambiguous         = true
+//   - lifecycle_native_state      = ts.NativeState   (verbatim provider state)
+//   - lifecycle_ambiguity_source  = ts.AmbiguitySource ("S-1","S-2","S-4","S-5")
+//   - lifecycle_ambiguity_detail  = ts.AmbiguityDetail (operator-readable)
+//   - lifecycle_ambiguity_deadline = ambiguityDeadline(providerName) [first observation only]
+//
+// When ts.Ambiguous == false:
+//   - All columns including the escalation counter are cleared.
+//
+// Phase 3.3: forensic history row on deadline expiry (triggeredBy="ambiguity-expiry").
+// Phase 3.4: escalation counter (lifecycle_ambiguity_consecutive_timeouts) is
+// incremented on each timeout. After ambiguityEscalationThreshold consecutive
+// timeouts, the target is escalated to status=error and all ambiguity state
+// is cleared. A forensic history row with triggeredBy="ambiguity-escalation"
+// is written so operators can reconstruct the escalation decision.
+//
+// Best-effort: DB errors are logged but do not propagate.
+func (r *Reconciler) applyAmbiguityToTarget(targetID, rolloutID, providerName, rawProvider string, ts *providers.TargetStatus) {
+	if ts == nil {
+		return
+	}
+	rec, err := r.app.Dao().FindRecordById("deployment_targets", targetID)
+	if err != nil {
+		log.Printf("[AMBIGUITY_WRITE_ERR] target=%s find: %v", targetID, err)
+		return
+	}
+	if ts.Ambiguous {
+		deadline := ambiguityDeadline(providerName)
+		existingDeadline := rec.GetString("lifecycle_ambiguity_deadline")
+		if existingDeadline != "" {
+			parsed, parseErr := time.Parse(time.RFC3339, existingDeadline)
+			if parseErr == nil {
+				if time.Now().After(parsed) {
+					// Phase 3.4: increment escalation counter.
+					consecutive := rec.GetInt("lifecycle_ambiguity_consecutive_timeouts") + 1
+					rec.Set("lifecycle_ambiguity_consecutive_timeouts", consecutive)
+
+					log.Printf("[AMBIGUITY_TIMEOUT] target=%s source=%s native_state=%s deadline=%s consecutive=%d",
+						targetID, ts.AmbiguitySource, ts.NativeState, existingDeadline, consecutive)
+					msg := "ambiguity unresolved past deadline: source=" + ts.AmbiguitySource + " native=" + ts.NativeState
+					r.writeHistory(rolloutID, targetID, "ambiguous", "failed", "", "", msg, rawProvider, "", "ambiguity-expiry")
+
+					// Phase 3.4: escalate to error after threshold consecutive timeouts.
+					if consecutive >= ambiguityEscalationThreshold {
+						log.Printf("[AMBIGUITY_ESCALATION] target=%s source=%s consecutive=%d — escalating to error",
+							targetID, ts.AmbiguitySource, consecutive)
+						escalateMsg := fmt.Sprintf("ambiguity escalated after %d consecutive timeout observations; source=%s native=%s",
+							consecutive, ts.AmbiguitySource, ts.NativeState)
+						r.writeHistory(rolloutID, targetID, "ambiguous", "failed", "", "", escalateMsg, rawProvider, "", "ambiguity-escalation")
+						// Force target to error; clear all ambiguity and counter.
+						now := time.Now().UTC().Format(time.RFC3339)
+						rec.Set("lifecycle_ambiguous", false)
+						rec.Set("lifecycle_native_state", "")
+						rec.Set("lifecycle_ambiguity_source", "")
+						rec.Set("lifecycle_ambiguity_detail", "")
+						rec.Set("lifecycle_ambiguity_deadline", nil)
+						rec.Set("lifecycle_ambiguity_consecutive_timeouts", 0)
+						rec.Set("status", "error")
+						rec.Set("last_state_change_at", now)
+						rec.Set("last_synced", now)
+						if err := r.app.Dao().SaveRecord(rec); err != nil {
+							log.Printf("[AMBIGUITY_ESCALATION_ERR] target=%s save: %v", targetID, err)
+						}
+						return
+					}
+				}
+				// Keep the original deadline; don't extend it.
+				deadline = parsed
+			}
+		}
+		rec.Set("lifecycle_ambiguous", true)
+		rec.Set("lifecycle_native_state", ts.NativeState)
+		rec.Set("lifecycle_ambiguity_source", ts.AmbiguitySource)
+		rec.Set("lifecycle_ambiguity_detail", ts.AmbiguityDetail)
+		rec.Set("lifecycle_ambiguity_deadline", deadline.UTC().Format(time.RFC3339))
+		log.Printf("[AMBIGUITY_SET] target=%s source=%s native_state=%s deadline=%s",
+			targetID, ts.AmbiguitySource, ts.NativeState, deadline.UTC().Format(time.RFC3339))
+	} else {
+		// Ambiguity resolved: clear all state including escalation counter.
+		rec.Set("lifecycle_ambiguous", false)
+		rec.Set("lifecycle_native_state", "")
+		rec.Set("lifecycle_ambiguity_source", "")
+		rec.Set("lifecycle_ambiguity_detail", "")
+		rec.Set("lifecycle_ambiguity_deadline", nil)
+		rec.Set("lifecycle_ambiguity_consecutive_timeouts", 0)
+	}
+	if err := r.app.Dao().SaveRecord(rec); err != nil {
+		log.Printf("[AMBIGUITY_WRITE_ERR] target=%s save: %v", targetID, err)
+	}
 }
 
 // noteSuspectError records that the provider returned an error observation
-// while the target was `updating`. Returns true if this is the SECOND
-// consecutive such observation, meaning the error is no longer plausibly
-// a Cloud Run convergence flap and SHOULD be persisted as `error`.
+// while the target was `updating`. Returns true when the observation count
+// reaches the per-provider suspicion threshold, derived from the provider's
+// CapEventualConsistency.UncertaintyP99 via suspicionThreshold() (Phase 3
+// Change 6). ECS (30s uncertainty) requires more observations than Cloud Run
+// (5s uncertainty) before the reconciler commits to `error`.
 //
 // Called only from the status-poll path. Cleared by clearSuspect on any
 // observation that contradicts the suspicion (e.g., `updating → running`,
 // `updating → updating`).
-func (r *Reconciler) noteSuspectError(targetID string) bool {
+func (r *Reconciler) noteSuspectError(targetID, providerName string) bool {
 	r.suspicionMu.Lock()
 	defer r.suspicionMu.Unlock()
 	r.suspicions[targetID]++
-	return r.suspicions[targetID] >= 2
+	threshold := suspicionThreshold(providerName, r.config.Interval)
+	return r.suspicions[targetID] >= threshold
 }
 
 // clearSuspect resets the suspicion counter for a target. Called whenever

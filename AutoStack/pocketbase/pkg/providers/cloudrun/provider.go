@@ -317,15 +317,23 @@ func (p *Provider) GetStatus(ctx context.Context, account *providers.CloudAccoun
 	message := ""
 	replicas := 0
 
+	// Phase 3.4: track confidence based on condition signal quality.
+	// "high" = Ready condition is terminal (SUCCEEDED or FAILED).
+	// "medium" = RECONCILING condition is present (rollout in progress).
+	// "low" = no relevant conditions found; provider gave no signal.
+	confidence := "low"
+
 	hasReady := false
 	for _, cond := range service.Conditions {
 		if cond.Type == "Ready" {
 			hasReady = true
 			if cond.State == runpb.Condition_CONDITION_SUCCEEDED {
 				status = "running"
+				confidence = "high"
 			} else if cond.State == runpb.Condition_CONDITION_FAILED {
 				status = "error"
 				message = cond.Message
+				confidence = "high"
 			}
 		}
 	}
@@ -333,6 +341,7 @@ func (p *Provider) GetStatus(ctx context.Context, account *providers.CloudAccoun
 		for _, cond := range service.Conditions {
 			if cond.Type == "ConfigurationsReady" && cond.State == runpb.Condition_CONDITION_RECONCILING {
 				status = "creating"
+				confidence = "medium"
 				break
 			}
 		}
@@ -345,6 +354,7 @@ func (p *Provider) GetStatus(ctx context.Context, account *providers.CloudAccoun
 		ReadyReplicas:     replicas,
 		Message:           message,
 		LastUpdated:       time.Now(),
+		ConfidenceLevel:   confidence,
 	}, nil
 }
 
