@@ -1,0 +1,20 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: one-click-operator
+  namespace: one-click-operator-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: one-click-operator
+  template:
+    metadata:
+      labels:
+        app: one-click-operator
+    spec:
+      serviceAccountName: controller-manager
+      containers:
+        - name: operator
+          image: ghcr.io/janlauber/one-click-operator:v1.6.1
+          imagePullPolicy: IfNotPresent

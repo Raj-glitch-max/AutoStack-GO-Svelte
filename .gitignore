@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # OS Files
 .DS_Store
 Thumbs.db
@@ -96,3 +97,42 @@ side projects/
 
 # Kiro specific (optional - uncomment if you don't want to share)
 # .kiro/
+=======
+# Node.js
+node_modules/
+dist/
+build/
+.svelte-kit/
+.vercel/
+.npm
+.cache
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+.history/
+
+# Keys and Secrets
+keys/
+*.json
+!package.json
+!tsconfig.json
+!composer.json
+!composer.lock
+
+# AutoStack specific
+bin/
+tmp/
+*.log
+
+# Git
+.git/
+>>>>>>> 98bbe46 (Initial commit of AutoStack-GO-Svelte project)

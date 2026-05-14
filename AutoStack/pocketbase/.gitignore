@@ -1,0 +1,11 @@
+/.cache
+/pocketbase
+/pocketbase*.zip
+/pb_data
+/tmp
+/bin
+./pocketbase
+one-click
+vendor/
+.rollouts/
+.DS_Store
