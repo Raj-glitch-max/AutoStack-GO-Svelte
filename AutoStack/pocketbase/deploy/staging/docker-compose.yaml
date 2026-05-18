@@ -1,0 +1,95 @@
+version: "3.9"
+
+# AutoStack Staging Stack
+# Provides: platform-api, pocketbase, prometheus, grafana, replay-verifier
+# Use: make -f deploy/staging/Makefile staging-up
+
+networks:
+  autostack-staging:
+    driver: bridge
+
+volumes:
+  pocketbase-data:
+  platform-db:
+  prometheus-data:
+  grafana-data:
+
+services:
+  platform-api:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.platform-api
+    image: autostack-platform-api:staging
+    ports:
+      - "8090:8090"
+    environment:
+      - AUTOSTACK_LOG_LEVEL=info
+      - AUTOSTACK_DB_PATH=/data/autostack.db
+    volumes:
+      - platform-db:/data
+    command: ["serve", "--addr", ":8090", "--db", "/data/autostack.db"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - autostack-staging
+    restart: unless-stopped
+
+  pocketbase:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile.pocketbase
+    image: autostack-pocketbase:staging
+    ports:
+      - "8080:8080"
+    volumes:
+      - pocketbase-data:/pb_data
+    networks:
+      - autostack-staging
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    networks:
+      - autostack-staging
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=autostack-staging
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    networks:
+      - autostack-staging
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  replay-verifier:
+    image: autostack-platform-api:staging
+    command: ["version"]
+    environment:
+      - AUTOSTACK_LOG_LEVEL=debug
+    networks:
+      - autostack-staging
+    depends_on:
+      platform-api:
+        condition: service_healthy
+    restart: "no"

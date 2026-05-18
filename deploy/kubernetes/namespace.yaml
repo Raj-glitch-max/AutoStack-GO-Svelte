@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: autostack
+  labels:
+    app.kubernetes.io/managed-by: autostack
+    autostack.io/component: platform

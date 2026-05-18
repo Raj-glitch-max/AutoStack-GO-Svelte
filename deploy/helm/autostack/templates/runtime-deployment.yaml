@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autostack-runtime
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: autostack-runtime
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+spec:
+  replicas: {{ .Values.runtime.replicas }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: autostack-runtime
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: autostack-runtime
+        app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      containers:
+        - name: platform-api
+          image: "{{ .Values.runtime.image.repository }}:{{ .Values.runtime.image.tag }}"
+          imagePullPolicy: {{ .Values.global.image.pullPolicy }}
+          args: ["serve", "--addr=:8090", "--db=$(AUTOSTACK_DB_PATH)"]
+          env:
+            - name: LOG_LEVEL
+              value: {{ .Values.runtime.env.LOG_LEVEL | quote }}
+            - name: AUTOSTACK_DB_PATH
+              value: {{ .Values.runtime.env.AUTOSTACK_DB_PATH | quote }}
+          ports:
+            - name: http
+              containerPort: 8090
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - name: runtime-data
+              mountPath: /data
+          resources:
+            requests:
+              cpu: {{ .Values.runtime.resources.requests.cpu | quote }}
+              memory: {{ .Values.runtime.resources.requests.memory | quote }}
+            limits:
+              cpu: {{ .Values.runtime.resources.limits.cpu | quote }}
+              memory: {{ .Values.runtime.resources.limits.memory | quote }}
+      volumes:
+        - name: runtime-data
+          persistentVolumeClaim:
+            claimName: autostack-runtime-pvc

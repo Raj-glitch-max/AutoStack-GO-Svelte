@@ -1,0 +1,82 @@
+---
+# AutoStack Archive Service
+# Hosts: forensic archival, retention, replay certification persistence
+# All writes are append-only. This service NEVER deletes archive entries.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autostack-archive
+  namespace: autostack
+  labels:
+    app.kubernetes.io/name: autostack-archive
+    app.kubernetes.io/component: archive-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: autostack-archive
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: autostack-archive
+        app.kubernetes.io/component: archive-service
+    spec:
+      serviceAccountName: autostack-runtime
+      containers:
+        - name: archive
+          image: autostack/archive:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: AUTOSTACK_ARCHIVE_DIR
+              value: /data/archive
+            - name: AUTOSTACK_RETENTION_DAYS
+              value: "365"
+          volumeMounts:
+            - name: archive-storage
+              mountPath: /data/archive
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+      volumes:
+        - name: archive-storage
+          persistentVolumeClaim:
+            claimName: autostack-archive-pvc
+---
+# AutoStack Observability Service
+# Hosts: streaming, subscription management, observability export
+# Read-only by design — derives metrics from append-only stores.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: autostack-observability
+  namespace: autostack
+  labels:
+    app.kubernetes.io/name: autostack-observability
+    app.kubernetes.io/component: observability-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: autostack-observability
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: autostack-observability
+        app.kubernetes.io/component: observability-service
+    spec:
+      serviceAccountName: autostack-runtime
+      containers:
+        - name: observability
+          image: autostack/observability:latest
+          imagePullPolicy: IfNotPresent
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"

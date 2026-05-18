@@ -1,0 +1,43 @@
+version: "3.9"
+
+# AutoStack local compose stack — single-node, development mode.
+# Uses in-process SQLite WAL. Not crash-durable across all failure modes;
+# use persistent volumes or an external DB for production.
+
+services:
+
+  platform-api:
+    build:
+      context: ../../
+      dockerfile: deploy/docker/Dockerfile.platform-api
+    image: autostack/platform-api:local
+    command: ["serve", "--addr=:8090", "--db=/data/autostack.db"]
+    ports:
+      - "8090:8090"
+    volumes:
+      - autostack-data:/data
+    environment:
+      LOG_LEVEL: info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # PocketBase — existing backend (Kubernetes deployments, auth, frontend).
+  pocketbase:
+    build:
+      context: ../../AutoStack/pocketbase
+      dockerfile: ../../deploy/docker/Dockerfile.pocketbase
+    image: autostack/pocketbase:local
+    ports:
+      - "8080:8080"
+    volumes:
+      - pocketbase-data:/pb_data
+    restart: unless-stopped
+
+volumes:
+  autostack-data:
+  pocketbase-data:

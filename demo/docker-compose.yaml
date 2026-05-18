@@ -1,0 +1,57 @@
+services:
+  pocketbase:
+    # autostack:dev is built locally from AutoStack/Dockerfile.
+    # If you have a published registry image, replace this with:
+    #   image: ghcr.io/<org>/autostack:<tag>
+    image: ${AUTOSTACK_IMAGE:-autostack:dev}
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      - pb_data:/app/one-click/pb_data
+    environment:
+      # Valid base64-encoded 32-byte demo key. DO NOT use in production.
+      # Generate a real one with: openssl rand -base64 32
+      - AUTOSTACK_ENCRYPTION_KEY=YXV0b3N0YWNrLWRlbW8ta2V5LTMyLWJ5dGVzLWxvbmc=
+      - AUTOSTACK_DEMO_MODE=true
+      - AUTOSTACK_K8S_OPTIONAL=true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    labels:
+      - "autostack.demo=true"
+      - "autostack.version=dev"
+
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - prom_data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    labels:
+      - "autostack.demo=true"
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=demo
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+    labels:
+      - "autostack.demo=true"
+
+volumes:
+  pb_data:
+  prom_data:
+  grafana_data:

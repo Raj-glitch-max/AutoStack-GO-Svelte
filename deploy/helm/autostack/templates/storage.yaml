@@ -1,0 +1,30 @@
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autostack-runtime-pvc
+  namespace: {{ .Values.global.namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.runtime.storage.size }}
+  {{- if .Values.runtime.storage.storageClass }}
+  storageClassName: {{ .Values.runtime.storage.storageClass }}
+  {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autostack-archive-pvc
+  namespace: {{ .Values.global.namespace }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.archive.storage.size }}
+  {{- if .Values.archive.storage.storageClass }}
+  storageClassName: {{ .Values.archive.storage.storageClass }}
+  {{- end }}

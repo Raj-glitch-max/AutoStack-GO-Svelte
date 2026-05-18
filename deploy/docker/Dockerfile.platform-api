@@ -1,0 +1,28 @@
+# ── Build stage ─────────────────────────────────────────────────────────────
+FROM golang:1.25-alpine AS builder
+
+# CGO is disabled — modernc SQLite is pure Go.
+ENV CGO_ENABLED=0 GOOS=linux GOARCH=amd64
+
+WORKDIR /src
+COPY AutoStack/pocketbase/go.mod AutoStack/pocketbase/go.sum ./
+RUN go mod download
+
+COPY AutoStack/pocketbase/ ./
+RUN go build -trimpath -ldflags="-s -w" -o /platform-api ./cmd/platform-api/
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+FROM gcr.io/distroless/static-debian12:nonroot AS runtime
+
+# AUTOSTACK_DB_PATH is the SQLite WAL file path.
+# Mount a persistent volume at /data for production.
+ENV AUTOSTACK_DB_PATH=/data/autostack.db
+
+COPY --from=builder /platform-api /platform-api
+
+# Data directory for WAL-backed SQLite. Mount a PVC here in Kubernetes.
+VOLUME ["/data"]
+
+EXPOSE 8090
+
+ENTRYPOINT ["/platform-api", "serve"]

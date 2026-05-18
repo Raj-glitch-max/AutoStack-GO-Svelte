@@ -1,0 +1,33 @@
+---
+# WAL and journal storage for the runtime execution substrate.
+# APPEND-ONLY: these volumes store durable execution evidence.
+# DO NOT delete or reclaim without running a forensic export first.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autostack-wal-pvc
+  namespace: autostack
+  labels:
+    app.kubernetes.io/component: wal-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: standard
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: autostack-archive-pvc
+  namespace: autostack
+  labels:
+    app.kubernetes.io/component: archive-storage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+  storageClassName: standard

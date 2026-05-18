@@ -1,0 +1,90 @@
+# AutoStack Helm chart default values.
+# Override these in a values override file for production.
+
+global:
+  image:
+    registry: ghcr.io/autostack
+    pullPolicy: IfNotPresent
+
+  # Namespace where all AutoStack components are deployed.
+  namespace: autostack
+
+runtime:
+  image:
+    repository: ghcr.io/autostack/platform-api
+    tag: "6.0.0"
+  replicas: 1
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+  env:
+    LOG_LEVEL: info
+    AUTOSTACK_DB_PATH: /data/autostack.db
+  storage:
+    size: 10Gi
+    storageClass: ""  # use cluster default
+
+workers:
+  image:
+    repository: ghcr.io/autostack/platform-api
+    tag: "6.0.0"
+  replicas: 2
+  terminationGracePeriodSeconds: 60
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+governance:
+  image:
+    repository: ghcr.io/autostack/platform-api
+    tag: "6.0.0"
+  replicas: 1
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+archive:
+  image:
+    repository: ghcr.io/autostack/archive
+    tag: "6.0.0"
+  replicas: 1
+  storage:
+    size: 50Gi
+    storageClass: ""
+  retentionDays: 365
+  resources:
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+    limits:
+      cpu: "250m"
+      memory: "256Mi"
+
+service:
+  type: ClusterIP
+  port: 8090
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts: []
+  tls: []
+
+serviceAccount:
+  name: autostack-runtime
+
+rbac:
+  create: true

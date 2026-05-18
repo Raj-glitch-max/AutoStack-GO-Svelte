@@ -1,0 +1,24 @@
+# ── Build stage ─────────────────────────────────────────────────────────────
+FROM golang:1.25-alpine AS builder
+
+ENV CGO_ENABLED=1 GOOS=linux
+RUN apk add --no-cache gcc musl-dev
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN go build -trimpath -ldflags="-s -w" -o /pocketbase .
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+FROM alpine:3.20
+
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=builder /pocketbase /pocketbase
+
+VOLUME ["/pb_data", "/pb_public"]
+EXPOSE 8080
+
+ENTRYPOINT ["/pocketbase", "serve", "--http=0.0.0.0:8080"]
