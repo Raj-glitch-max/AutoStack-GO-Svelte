@@ -1,8 +1,13 @@
 package k8s
 
+import "fmt"
+
 import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 func GetClusterInfo() (interface{}, error) {
+	if Clientset == nil {
+		return nil, fmt.Errorf("kubernetes disabled: no client (local runtime mode)")
+	}
 
 	// get storage classes
 	sc, err := Clientset.StorageV1().StorageClasses().List(Ctx, metav1.ListOptions{})
