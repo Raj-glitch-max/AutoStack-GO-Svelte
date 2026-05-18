@@ -6,6 +6,7 @@
 /bin
 ./pocketbase
 one-click
+platform-api
 vendor/
 .rollouts/
 .DS_Store
