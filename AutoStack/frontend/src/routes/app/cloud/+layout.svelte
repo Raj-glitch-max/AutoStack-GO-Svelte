@@ -14,8 +14,12 @@
   }
 </script>
 
-<div class="flex min-h-screen bg-gray-50 dark:bg-gray-900">
-  <aside class="w-52 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 pt-6">
+<!-- This layout is rendered inside the parent absolutely-positioned container
+     (see /app/+layout.svelte).  Using min-h-screen here would push the
+     content past the parent's height and collapse the side nav.  Use h-full
+     to fill the available space instead. -->
+<div class="flex h-full bg-gray-50 dark:bg-gray-900">
+  <aside class="w-52 flex-shrink-0 border-r border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 pt-6 overflow-y-auto">
     <nav class="space-y-1 px-3">
       <p class="px-2 pb-2 text-xs font-semibold uppercase tracking-widest text-gray-400 dark:text-gray-500">
         Cloud
@@ -34,7 +38,7 @@
     </nav>
   </aside>
 
-  <main class="flex-1 overflow-auto">
+  <main class="flex-1 overflow-y-auto">
     <slot />
   </main>
 </div>

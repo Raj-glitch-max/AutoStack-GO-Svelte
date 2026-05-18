@@ -14,7 +14,7 @@
   </div>
 
   <div class="absolute top-14 left-0 right-0 bottom-0">
-    {#if !$page.url.pathname.startsWith("/app/projects/") && !$page.url.pathname.startsWith("/app/deployments/") && !$page.url.pathname.startsWith("/app/blueprints/") && !$page.url.pathname.startsWith("/app/admin/")}
+    {#if !$page.url.pathname.startsWith("/app/projects/") && !$page.url.pathname.startsWith("/app/deployments/") && !$page.url.pathname.startsWith("/app/blueprints/") && !$page.url.pathname.startsWith("/app/admin/") && !$page.url.pathname.startsWith("/app/platform") && !$page.url.pathname.startsWith("/app/cloud") && !$page.url.pathname.startsWith("/app/runtime")}
       <div
         class="bg-primary-600 w-full p-4 relative"
         in:slide={{ duration: 200, easing: cubicOut }}

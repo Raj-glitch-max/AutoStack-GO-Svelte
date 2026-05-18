@@ -82,67 +82,76 @@
     setCurrentItem();
   }
 
+  // Surface PocketBase field-level errors instead of a generic message.
+  function formatPbError(error: any, fallback = "Request failed"): string {
+    const fieldErrors = error?.response?.data ?? error?.data ?? null;
+    if (fieldErrors && typeof fieldErrors === "object") {
+      const parts: string[] = [];
+      for (const [field, info] of Object.entries(fieldErrors)) {
+        const msg = (info as any)?.message ?? String(info);
+        parts.push(`${field}: ${msg}`);
+      }
+      if (parts.length) return parts.join("\n");
+    }
+    return error?.message ?? fallback;
+  }
+
   async function handleSaveManifest() {
-    if (!name) {
+    if (!name?.trim()) {
       toast.error("Name is required");
       return;
     }
-
-    if (!description) {
-      toast.error("Description is required");
-      return;
-    }
-
+    // description + avatar are optional per the blueprints collection schema.
     if (!manifest) {
       toast.error("Manifest is required");
       return;
     }
 
-    let formData = new FormData();
-    formData.append("avatar", avatarFile);
-
-    // parse the manifest yaml to json
-    const parsedManifest = yaml.load(manifest);
+    // Parse the manifest YAML up front.  Use loadAll() to support multi-document
+    // YAML (manifests separated by '---'), which yaml.load() rejects with
+    //   "expected a single document in the stream, but found more"
+    // If the user supplied multiple docs, store them as an array of JSON
+    // objects.  If only one doc, unwrap so the saved manifest stays the same
+    // shape the rest of the app expects for single-doc blueprints.
+    let parsedManifest: any;
+    try {
+      const docs: any[] = [];
+      yaml.loadAll(manifest, (doc: any) => docs.push(doc));
+      if (docs.length === 0) {
+        toast.error("Manifest YAML is empty");
+        return;
+      }
+      parsedManifest = docs.length === 1 ? docs[0] : docs;
+    } catch (e: any) {
+      toast.error("Manifest YAML is invalid: " + (e?.message ?? "parse error"));
+      return;
+    }
 
     const data: BlueprintsRecord = {
-      name,
-      description,
+      name: name.trim(),
+      description: description ?? "",
       private: isPrivate,
       manifest: parsedManifest,
       owner: client.authStore?.record?.id ?? ""
     };
 
-    toast.promise(
-      client
-        .collection("blueprints")
-        .create(data)
-        .then((response) => {
-          if (avatarFile) {
-            client
-              .collection("blueprints")
-              .update(response.id, formData)
-              .then(() => {
-                updateDataStores({
-                  filter: UpdateFilterEnum.ALL
-                });
-              })
-              .catch((error) => {
-                toast.error(error.message);
-              });
-          }
-
-          updateDataStores({
-            filter: UpdateFilterEnum.ALL
-          });
-
-          blueprintModalOpen = false;
-        }),
-      {
-        loading: "Saving...",
-        success: "Blueprint saved",
-        error: "Error saving blueprint"
+    try {
+      const response = await client.collection("blueprints").create(data);
+      if (avatarFile) {
+        const formData = new FormData();
+        formData.append("avatar", avatarFile);
+        try {
+          await client.collection("blueprints").update(response.id, formData);
+        } catch (uploadErr: any) {
+          toast.error("Blueprint created, but avatar upload failed:\n" + formatPbError(uploadErr));
+        }
       }
-    );
+      updateDataStores({ filter: UpdateFilterEnum.ALL });
+      toast.success("Blueprint saved");
+      blueprintModalOpen = false;
+    } catch (error: any) {
+      toast.error(formatPbError(error, "Failed to save blueprint"));
+    }
   }
 </script>
 
