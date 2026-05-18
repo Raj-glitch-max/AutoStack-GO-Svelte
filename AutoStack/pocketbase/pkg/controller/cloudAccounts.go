@@ -9,8 +9,21 @@ import (
 	"github.com/janlauber/one-click/pkg/secrets"
 	"github.com/labstack/echo/v5"
 	"github.com/pocketbase/pocketbase"
+	"github.com/pocketbase/pocketbase/apis"
 	"github.com/pocketbase/pocketbase/models"
 )
+
+// authUserFromContext returns the authenticated user record from the echo
+// context. apis.RequireRecordAuth("users") stores it under
+// apis.ContextAuthRecordKey ("authRecord"). Older code in this file used
+// c.Get("user"), which is the wrong key and made every cloud-account
+// endpoint reject all requests with HTTP 401.
+func authUserFromContext(c echo.Context) *models.Record {
+	if r, ok := c.Get(apis.ContextAuthRecordKey).(*models.Record); ok {
+		return r
+	}
+	return nil
+}
 
 // decryptCredentials reads the credentials_encrypted field from a
 // cloud_accounts record and returns the plaintext blob suitable for
@@ -24,7 +37,7 @@ func decryptCredentials(record *models.Record) (string, error) {
 
 // HandleCloudAccountCreate creates a new cloud account
 func HandleCloudAccountCreate(c echo.Context, app *pocketbase.PocketBase) error {
-	user := c.Get("user")
+	user := authUserFromContext(c)
 	if user == nil {
 		return c.JSON(401, map[string]string{"error": "unauthorized"})
 	}
@@ -66,7 +79,7 @@ func HandleCloudAccountCreate(c echo.Context, app *pocketbase.PocketBase) error 
 
 	record := models.NewRecord(collection)
 	record.Set("name", req.Name)
-	record.Set("user", user.(*models.Record).Id)
+	record.Set("user", user.Id)
 	record.Set("provider", req.Provider)
 	record.Set("region", req.Region)
 	record.Set("credentials_encrypted", encrypted)
@@ -144,13 +157,13 @@ func HandleCloudAccountValidate(c echo.Context, app *pocketbase.PocketBase, acco
 	}
 
 	// Get the user from context
-	user := c.Get("user")
+	user := authUserFromContext(c)
 	if user == nil {
 		return c.JSON(401, map[string]string{"error": "unauthorized"})
 	}
 
 	// Check ownership
-	if record.GetString("user") != user.(*models.Record).Id {
+	if record.GetString("user") != user.Id {
 		return c.JSON(403, map[string]string{"error": "forbidden"})
 	}
 
@@ -218,13 +231,13 @@ func HandleCloudAccountValidate(c echo.Context, app *pocketbase.PocketBase, acco
 
 // HandleCloudAccountList lists cloud accounts for the current user
 func HandleCloudAccountList(c echo.Context, app *pocketbase.PocketBase) error {
-	user := c.Get("user")
+	user := authUserFromContext(c)
 	if user == nil {
 		return c.JSON(401, map[string]string{"error": "unauthorized"})
 	}
 
 	records, err := app.Dao().FindRecordsByFilter("cloud_accounts", "user = {:user}", "-created", 100, 0, map[string]interface{}{
-		"user": user.(*models.Record).Id,
+		"user": user.Id,
 	})
 	if err != nil {
 		return c.JSON(500, map[string]string{"error": "failed to list accounts"})
@@ -244,12 +257,12 @@ func HandleCloudAccountRegions(c echo.Context, app *pocketbase.PocketBase, accou
 		return c.JSON(404, map[string]string{"error": "cloud account not found"})
 	}
 
-	user := c.Get("user")
+	user := authUserFromContext(c)
 	if user == nil {
 		return c.JSON(401, map[string]string{"error": "unauthorized"})
 	}
 
-	if record.GetString("user") != user.(*models.Record).Id {
+	if record.GetString("user") != user.Id {
 		return c.JSON(403, map[string]string{"error": "forbidden"})
 	}
 
@@ -294,7 +307,7 @@ func HandleCloudAccountRegions(c echo.Context, app *pocketbase.PocketBase, accou
 
 // HandleCostEstimate estimates cost for a deployment
 func HandleCostEstimate(c echo.Context, app *pocketbase.PocketBase) error {
-	user := c.Get("user")
+	user := authUserFromContext(c)
 	if user == nil {
 		return c.JSON(401, map[string]string{"error": "unauthorized"})
 	}
@@ -313,7 +326,7 @@ func HandleCostEstimate(c echo.Context, app *pocketbase.PocketBase) error {
 		return c.JSON(404, map[string]string{"error": "cloud account not found"})
 	}
 
-	if record.GetString("user") != user.(*models.Record).Id {
+	if record.GetString("user") != user.Id {
 		return c.JSON(403, map[string]string{"error": "forbidden"})
 	}
 

@@ -50,51 +50,64 @@
     return Array.from(set).join(",");
   }
 
+  // Surfaces PocketBase field-level validation errors instead of the generic
+  // top-level "Failed to create record" — which masked real issues like
+  // "name must be < 100 characters".
+  function formatPbError(error: any, fallback = "Request failed"): string {
+    const fieldErrors = error?.response?.data ?? error?.data ?? null;
+    if (fieldErrors && typeof fieldErrors === "object") {
+      const parts: string[] = [];
+      for (const [field, info] of Object.entries(fieldErrors)) {
+        const msg = (info as any)?.message ?? String(info);
+        parts.push(`${field}: ${msg}`);
+      }
+      if (parts.length) return parts.join("\n");
+    }
+    return error?.message ?? fallback;
+  }
+
   async function handleCreateProject(event: Event) {
     event.preventDefault();
 
-    if (!name) {
+    if (!name.trim()) {
       toast.error("Please enter a name");
       return;
     }
-
-    let formData = new FormData();
-    formData.append("avatar", avatarFile);
+    const authId = client.authStore?.record?.id ?? "";
+    if (!authId) {
+      toast.error("You must be logged in to create a project");
+      return;
+    }
 
     const project: ProjectsRecord = {
-      name: name,
+      name: name.trim(),
       description: description,
-      user: client.authStore?.record?.id ?? "",
+      user: authId,
       tags: setToString(localTags)
     };
 
-    await client
-      .collection("projects")
-      .create(project)
-      .then((response) => {
-        if (avatarFile) {
-          client
-            .collection("projects")
-            .update(response.id, formData)
-            .then(() => {
-              updateDataStores({
-                filter: UpdateFilterEnum.ALL
-              });
-            })
-            .catch((error) => {
-              toast.error(error.message);
-            });
+    try {
+      const response = await client.collection("projects").create(project);
+      if (avatarFile) {
+        const formData = new FormData();
+        formData.append("avatar", avatarFile);
+        try {
+          await client.collection("projects").update(response.id, formData);
+        } catch (uploadErr: any) {
+          toast.error("Project created, but avatar upload failed:\n" + formatPbError(uploadErr));
         }
-        toast.success("Project created");
-        projectModal = false;
-        localTags = new Set();
-        name = "";
-        description = "";
-        updateDataStores();
-      })
-      .catch((error) => {
-        toast.error(error.message);
-      });
+      }
+      toast.success("Project created");
+      projectModal = false;
+      localTags = new Set();
+      name = "";
+      description = "";
+      avatar = "";
+      avatarFile = undefined as unknown as File;
+      updateDataStores({ filter: UpdateFilterEnum.ALL });
+    } catch (error: any) {
+      toast.error(formatPbError(error, "Failed to create project"));
+    }
   }
 </script>
 
@@ -123,7 +136,7 @@
   </Label>
 
   <Label class="space-y-2">
-    <span>Avatar*</span>
+    <span>Avatar <span class="text-xs text-gray-400">(optional)</span></span>
     <Fileupload
       bind:value={avatar}
       on:change={(event) => {
