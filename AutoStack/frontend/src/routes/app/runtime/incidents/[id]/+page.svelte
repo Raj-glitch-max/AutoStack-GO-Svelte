@@ -3,8 +3,9 @@
   import { onMount } from "svelte";
   import { goto } from "$app/navigation";
   import { client } from "$lib/pocketbase";
-  import { Badge, Card, Button, Spinner, Alert } from "flowbite-svelte";
-  import { ArrowLeft, RefreshCw } from "lucide-svelte";
+  import { Badge, Card, Button, Spinner, Alert, Modal, Textarea, Label } from "flowbite-svelte";
+  import { ArrowLeft, RefreshCw, CheckCircle, Check, RotateCcw } from "lucide-svelte";
+  import toast from "svelte-french-toast";
 
   const incidentId = $page.params.id;
 
@@ -41,6 +42,40 @@
   }
 
   onMount(fetchIncident);
+
+  type ActionModal = "" | "acknowledge" | "resolve" | "reopen";
+  let actionModal: ActionModal = "";
+  let actionReason = "";
+  let actionBusy = false;
+  let actionOpen = false;
+  function openAction(m: ActionModal) { actionModal = m; actionReason = ""; actionOpen = true; }
+  function closeAction() { actionOpen = false; actionModal = ""; actionReason = ""; }
+
+  async function applyTransition(to: "acknowledged" | "resolved" | "reopened") {
+    if (!actionReason.trim() && to !== "acknowledged") {
+      toast.error("Reason is required");
+      return;
+    }
+    actionBusy = true;
+    try {
+      const actor = client.authStore?.record?.email ?? "operator";
+      await client.send(`/api/v1/reconciler/incidents/${incidentId}/transition`, {
+        method: "POST",
+        body: JSON.stringify({ to, reason: actionReason.trim(), actor }),
+      });
+      toast.success(`Incident ${to}`);
+      closeAction();
+      await fetchIncident();
+    } catch (e: any) {
+      toast.error(e?.response?.error ?? e?.message ?? `Failed to ${to} incident`);
+    } finally {
+      actionBusy = false;
+    }
+  }
+
+  $: canAcknowledge = incident && ["open", "escalating", "reopened"].includes(incident.status);
+  $: canResolve     = incident && ["open", "escalating", "acknowledged", "reopened"].includes(incident.status);
+  $: canReopen      = incident && incident.status === "resolved";
 
   function severityColor(sev: string) {
     switch (sev) {
@@ -131,7 +166,69 @@
           {incident.forensic_summary}
         </div>
       {/if}
+
+      <!-- Operator actions — recorded with actor + reason, no silent state changes -->
+      <div class="mt-4 flex gap-2 flex-wrap">
+        {#if canAcknowledge}
+          <Button size="xs" color="yellow" on:click={() => openAction("acknowledge")}>
+            <Check class="w-3 h-3 mr-1" /> Acknowledge
+          </Button>
+        {/if}
+        {#if canResolve}
+          <Button size="xs" color="green" on:click={() => openAction("resolve")}>
+            <CheckCircle class="w-3 h-3 mr-1" /> Resolve
+          </Button>
+        {/if}
+        {#if canReopen}
+          <Button size="xs" color="orange" on:click={() => openAction("reopen")}>
+            <RotateCcw class="w-3 h-3 mr-1" /> Re-open
+          </Button>
+        {/if}
+        {#if !canAcknowledge && !canResolve && !canReopen}
+          <p class="text-xs text-gray-400 italic">No operator actions available in status <code>{incident.status}</code>.</p>
+        {/if}
+      </div>
+
+      <!-- Link back to the affected runtime deployment when source=runtime-engine -->
+      {#if incident.source === "runtime-engine" && incident.target}
+        <div class="mt-3 text-xs">
+          <a href="/app/runtime/deployments" class="text-primary-600 hover:underline">
+            View affected runtime deployment ({incident.target.slice(0, 12)}…) →
+          </a>
+        </div>
+      {/if}
     </Card>
+
+    <!-- Action confirmation modal -->
+    <Modal bind:open={actionOpen} title={
+      actionModal === "acknowledge" ? "Acknowledge incident" :
+      actionModal === "resolve"     ? "Resolve incident" :
+      actionModal === "reopen"      ? "Re-open incident" :
+      ""
+    } autoclose={false} size="sm">
+      <div class="space-y-3">
+        <Label class="space-y-1">
+          <span>Reason {actionModal === "acknowledge" ? "(optional)" : "(required)"}</span>
+          <Textarea bind:value={actionReason} rows={3} placeholder="What was investigated / what changed?" />
+        </Label>
+        <p class="text-xs text-gray-500">
+          Recorded as <code>{client.authStore?.record?.email ?? "operator"}</code> at the current server time.
+          This action is irreversible from the API perspective (re-open is a separate transition with its own audit row).
+        </p>
+      </div>
+      <svelte:fragment slot="footer">
+        <div class="flex gap-2 justify-end w-full">
+          <Button color="alternative" on:click={closeAction} disabled={actionBusy}>Cancel</Button>
+          <Button
+            color={actionModal === "acknowledge" ? "yellow" : actionModal === "resolve" ? "green" : "orange"}
+            on:click={() => applyTransition(actionModal === "acknowledge" ? "acknowledged" : actionModal === "resolve" ? "resolved" : "reopened")}
+            disabled={actionBusy}
+          >
+            {actionBusy ? "Submitting…" : `Confirm ${actionModal}`}
+          </Button>
+        </div>
+      </svelte:fragment>
+    </Modal>
 
     <!-- Runtime state snapshots (forensic evidence at creation time) -->
     {#if incident.retry_state || incident.ambiguity_state || incident.lease_state}

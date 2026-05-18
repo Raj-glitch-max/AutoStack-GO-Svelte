@@ -37,6 +37,11 @@ type PlatformOverview struct {
 // ─── Executions ────────────────────────────────────────────────────────────
 
 // ExecutionSummary is one row in the execution explorer list.
+//
+// Source field distinguishes:
+//   "live"  — real execution produced by the runtime engine / planner
+//   "demo"  — seeded scenario for UI demonstration (NEVER from a real run)
+// Operators must never confuse the two; the UI labels them explicitly.
 type ExecutionSummary struct {
 	ExecutionID        string `json:"execution_id"`
 	VerificationState  string `json:"verification_state"`
@@ -46,6 +51,7 @@ type ExecutionSummary struct {
 	AuditEntryCount    int    `json:"audit_entry_count"`
 	HasContradictions  bool   `json:"has_contradictions"`
 	HasOverrides       bool   `json:"has_overrides"`
+	Source             string `json:"source"` // "live" | "demo"
 }
 
 // ExecutionDetailResponse is returned by GET /platform/executions/:id.

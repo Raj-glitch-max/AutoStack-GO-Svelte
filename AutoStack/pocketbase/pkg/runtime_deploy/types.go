@@ -68,8 +68,15 @@ type Deployment struct {
 	ContainerName string          `json:"container_name,omitempty"`
 	HealthURL     string          `json:"health_url,omitempty"`
 	LastError     string          `json:"last_error,omitempty"`
-	CreatedAt     time.Time       `json:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at"`
+
+	// Real observational fields populated by reconciler.  Never synthesized.
+	StartedAt          time.Time `json:"started_at,omitempty"`            // first time state hit certified
+	LastHealthCheckAt  time.Time `json:"last_health_check_at,omitempty"`  // most recent reconciler probe
+	RestartCount       int       `json:"restart_count"`                   // engine-driven container recreations
+	UptimeSeconds      int64     `json:"uptime_seconds"`                  // computed: now - StartedAt; 0 if never certified
+
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // DeploymentEvent is one append-only event in the deployment's lifecycle log.

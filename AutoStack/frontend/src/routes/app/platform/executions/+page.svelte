@@ -58,6 +58,7 @@
   {:else}
     <Table>
       <TableHead>
+        <TableHeadCell>Source</TableHeadCell>
         <TableHeadCell>Execution ID</TableHeadCell>
         <TableHeadCell>State</TableHeadCell>
         <TableHeadCell>Confidence</TableHeadCell>
@@ -68,6 +69,13 @@
       <TableBody>
         {#each executions as ex}
           <TableBodyRow>
+            <TableBodyCell>
+              {#if ex.source === 'demo'}
+                <Badge color="yellow" class="text-[10px] font-mono">DEMO</Badge>
+              {:else}
+                <Badge color="green" class="text-[10px] font-mono">LIVE</Badge>
+              {/if}
+            </TableBodyCell>
             <TableBodyCell>
               <a
                 href="/app/platform/executions/{ex.execution_id}"

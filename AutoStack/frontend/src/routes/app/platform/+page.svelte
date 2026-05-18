@@ -8,6 +8,7 @@
   let overview: any = null;
   let executions: any[] = [];
   let providers: any = null;
+  let sourceFilter: "all" | "live" | "demo" = "all";
 
   async function fetchAll() {
     loading = true;
@@ -92,18 +93,46 @@
     <!-- execution cards -->
     {#if executions.length > 0}
       <section class="space-y-3">
-        <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
-          Executions ({executions.length})
-        </h2>
+        <div class="flex items-baseline justify-between gap-3 flex-wrap">
+          <h2 class="text-sm font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+            Executions ({executions.filter((e) => sourceFilter === 'all' || e.source === sourceFilter).length}{sourceFilter === 'all' ? '' : ` of ${executions.length}`})
+          </h2>
+          <div class="flex gap-1">
+            {#each [
+              { v: 'all',  label: 'All' },
+              { v: 'live', label: 'Live only' },
+              { v: 'demo', label: 'Demo only' },
+            ] as opt}
+              <button
+                on:click={() => (sourceFilter = opt.v)}
+                class="px-2.5 py-0.5 text-xs rounded {sourceFilter === opt.v
+                  ? 'bg-primary-600 text-white'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'}"
+              >{opt.label}</button>
+            {/each}
+          </div>
+        </div>
+        {#if executions.some((e) => e.source === 'demo')}
+          <div class="rounded-md border border-orange-200 bg-orange-50 dark:bg-orange-900/20 px-3 py-2 text-xs text-orange-800 dark:text-orange-300">
+            <strong>DEMO data present.</strong>
+            Seeded scenarios are tagged with a yellow <span class="inline-block px-1.5 py-0.5 rounded bg-yellow-100 text-yellow-800 text-[10px] font-mono">DEMO</span> badge and are NOT produced by a live execution.
+            Use the filter to show only live executions.
+          </div>
+        {/if}
         <div class="grid gap-3 sm:grid-cols-2">
-          {#each executions as ex}
-            <Card padding="md" class="hover:ring-2 hover:ring-primary-400 transition-shadow">
+          {#each executions.filter((e) => sourceFilter === 'all' || e.source === sourceFilter) as ex}
+            <Card padding="md" class="hover:ring-2 hover:ring-primary-400 transition-shadow {ex.source === 'demo' ? 'opacity-95' : ''}">
               <div class="flex items-start justify-between gap-2">
                 <div class="min-w-0 flex-1">
                   <div class="flex items-center gap-2 flex-wrap">
                     <span class="text-sm font-mono text-gray-800 dark:text-gray-200 truncate">
                       {ex.execution_id}
                     </span>
+                    {#if ex.source === 'demo'}
+                      <Badge color="yellow" class="text-[10px] font-mono">DEMO</Badge>
+                    {:else}
+                      <Badge color="green" class="text-[10px] font-mono">LIVE</Badge>
+                    {/if}
                     <Badge color={stateColor(ex.verification_state)} class="text-xs">
                       {ex.verification_state}
                     </Badge>

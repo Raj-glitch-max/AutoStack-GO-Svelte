@@ -177,8 +177,13 @@ func (r *Reconciler) recordDirect(d *Deployment, kind string, confidence float64
 
 // recordHealthyIfStale writes a "healthy" observation only if the last
 // healthy observation is older than 2× the tick interval. Avoids flooding
-// the observation log during normal steady-state.
+// the observation log during normal steady-state. Also updates the
+// deployment's last_health_check_at timestamp — this fires on EVERY tick
+// regardless of observation-write throttling, so the timestamp truly
+// reflects the last probe.
 func (r *Reconciler) recordHealthyIfStale(d *Deployment) {
+	r.updateLastHealthCheck(d)
+
 	recent, err := r.store.ListObservations(d.ID, 1)
 	if err != nil {
 		return
@@ -188,6 +193,18 @@ func (r *Reconciler) recordHealthyIfStale(d *Deployment) {
 		return
 	}
 	r.recordDirect(d, "healthy", 1.0, "container running, image matches desired")
+}
+
+// updateLastHealthCheck stamps the deployment record with the current time.
+// Cheap UPDATE — no schema transition.  Failures are logged-and-ignored;
+// this is observability metadata, not lifecycle state.
+func (r *Reconciler) updateLastHealthCheck(d *Deployment) {
+	rec, err := r.store.app.Dao().FindRecordById("runtime_deployments", d.ID)
+	if err != nil {
+		return
+	}
+	rec.Set("last_health_check_at", pbDate(time.Now().UTC()))
+	_ = r.store.app.Dao().SaveRecord(rec)
 }
 
 // declareContradicted transitions the deployment to `contradicted` and opens

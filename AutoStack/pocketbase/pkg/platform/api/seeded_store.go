@@ -121,6 +121,7 @@ func NewSeededPlatformStore() *SeededPlatformStore {
 			AuditEntryCount:   42,
 			HasContradictions: false,
 			HasOverrides:      false,
+			Source:            "demo",
 		},
 		{
 			ExecutionID:       "exec-contradicted-1",
@@ -131,6 +132,7 @@ func NewSeededPlatformStore() *SeededPlatformStore {
 			AuditEntryCount:   89,
 			HasContradictions: true,
 			HasOverrides:      false,
+			Source:            "demo",
 		},
 		{
 			ExecutionID:       "exec-pending-1",
@@ -141,6 +143,7 @@ func NewSeededPlatformStore() *SeededPlatformStore {
 			AuditEntryCount:   12,
 			HasContradictions: false,
 			HasOverrides:      true,
+			Source:            "demo",
 		},
 	}
 

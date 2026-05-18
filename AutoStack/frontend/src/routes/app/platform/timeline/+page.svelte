@@ -17,7 +17,7 @@
       const list: any = await client.send("/api/v1/platform/executions", { method: "GET" });
       executionList = (list ?? []).map((e: any) => ({
         value: e.execution_id,
-        name: `${e.execution_id}  (${e.verification_state})`,
+        name: `[${(e.source ?? 'live').toUpperCase()}]  ${e.execution_id}  (${e.verification_state})`,
         state: e.verification_state,
       }));
     } catch (e: any) {

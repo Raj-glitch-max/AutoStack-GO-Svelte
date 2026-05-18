@@ -239,22 +239,32 @@ func (s *Store) appendEvent(deploymentID string, seq int, from, to DeploymentSta
 }
 
 func (s *Store) recordToDeployment(rec *models.Record) *Deployment {
-	return &Deployment{
-		ID:            rec.Id,
-		Name:          rec.GetString("name"),
-		UserID:        rec.GetString("user"),
-		Image:         rec.GetString("image"),
-		HostPort:      rec.GetInt("host_port"),
-		ContainerPort: rec.GetInt("container_port"),
-		State:         DeploymentState(rec.GetString("state")),
-		PreviousImage: rec.GetString("previous_image"),
-		ContainerID:   rec.GetString("container_id"),
-		ContainerName: rec.GetString("container_name"),
-		HealthURL:     rec.GetString("health_url"),
-		LastError:     rec.GetString("last_error"),
-		CreatedAt:     rec.GetCreated().Time(),
-		UpdatedAt:     rec.GetUpdated().Time(),
+	startedAt := parsePBDate(rec.GetString("started_at"))
+	d := &Deployment{
+		ID:                rec.Id,
+		Name:              rec.GetString("name"),
+		UserID:            rec.GetString("user"),
+		Image:             rec.GetString("image"),
+		HostPort:          rec.GetInt("host_port"),
+		ContainerPort:     rec.GetInt("container_port"),
+		State:             DeploymentState(rec.GetString("state")),
+		PreviousImage:     rec.GetString("previous_image"),
+		ContainerID:       rec.GetString("container_id"),
+		ContainerName:     rec.GetString("container_name"),
+		HealthURL:         rec.GetString("health_url"),
+		LastError:         rec.GetString("last_error"),
+		StartedAt:         startedAt,
+		LastHealthCheckAt: parsePBDate(rec.GetString("last_health_check_at")),
+		RestartCount:      rec.GetInt("restart_count"),
+		CreatedAt:         rec.GetCreated().Time(),
+		UpdatedAt:         rec.GetUpdated().Time(),
 	}
+	// uptime_seconds is computed at read time: only meaningful when the
+	// container is running (certified) AND we have a started_at.
+	if !startedAt.IsZero() && d.State == StateCertified {
+		d.UptimeSeconds = int64(time.Since(startedAt).Seconds())
+	}
+	return d
 }
 
 // deriveContainerName produces a Docker-safe container name from the

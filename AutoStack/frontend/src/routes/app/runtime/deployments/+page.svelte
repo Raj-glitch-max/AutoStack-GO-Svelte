@@ -11,6 +11,8 @@
     container_id?: string; container_name?: string; health_url?: string;
     last_error?: string; previous_image?: string;
     created_at: string; updated_at: string;
+    started_at?: string; last_health_check_at?: string;
+    restart_count?: number; uptime_seconds?: number;
   };
   type Event = {
     sequence: number; from_state: string; to_state: string;
@@ -270,6 +272,17 @@
                 {#if d.host_port > 0} &middot; port: <code>{d.host_port}:{d.container_port}</code>{/if}
                 &middot; created: {formatTs(d.created_at)}
               </p>
+              {#if d.uptime_seconds && d.state === 'certified'}
+                <p class="text-xs text-gray-500 dark:text-gray-400">
+                  uptime: {d.uptime_seconds < 60 ? d.uptime_seconds + 's' : d.uptime_seconds < 3600 ? Math.floor(d.uptime_seconds/60) + 'm' : Math.floor(d.uptime_seconds/3600) + 'h'}
+                  {#if d.restart_count !== undefined && d.restart_count > 0}
+                    &middot; restarts: <span class="text-orange-600">{d.restart_count}</span>
+                  {/if}
+                  {#if d.last_health_check_at}
+                    &middot; last health check: {formatTs(d.last_health_check_at)}
+                  {/if}
+                </p>
+              {/if}
               {#if d.last_error}
                 <p class="mt-1 text-xs text-red-600 dark:text-red-400 line-clamp-2">{d.last_error}</p>
               {/if}

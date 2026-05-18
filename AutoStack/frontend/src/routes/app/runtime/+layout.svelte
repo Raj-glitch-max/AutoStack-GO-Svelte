@@ -3,6 +3,7 @@
 
   const navItems = [
     { href: "/app/runtime/deployments", label: "Deployments" },
+    { href: "/app/runtime/topology",     label: "Topology" },
     { href: "/app/runtime/truth",        label: "Truth Status" },
     { href: "/app/runtime/observations", label: "Observations" },
     { href: "/app/runtime/drifts",       label: "Drifts" },

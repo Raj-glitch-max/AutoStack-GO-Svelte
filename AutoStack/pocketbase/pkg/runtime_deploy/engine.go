@@ -233,7 +233,14 @@ func (e *Engine) toCertified(ctx context.Context, d *Deployment) {
 	if time.Since(d.UpdatedAt) < e.stabilize {
 		return
 	}
-	_ = e.store.Transition(d.ID, StateStabilized, StateCertified, "engine.certify", "container stable; deployment certified", "", nil)
+	_ = e.store.Transition(d.ID, StateStabilized, StateCertified, "engine.certify",
+		"container stable; deployment certified", "",
+		func(rec *models.Record) {
+			// Set started_at on first certification; preserve it on later transitions.
+			if rec.GetString("started_at") == "" {
+				rec.Set("started_at", pbDate(time.Now().UTC()))
+			}
+		})
 }
 
 // RequestRollback transitions the deployment into the rollback queue. The
@@ -293,7 +300,14 @@ func (e *Engine) toRolledBack(ctx context.Context, d *Deployment) {
 		e.fail(d, StateRollingBack, "rolled-back container did not stabilize", st)
 		return
 	}
-	_ = e.store.Transition(d.ID, StateRollingBack, StateRolledBack, "engine.rollback.complete", "rollback complete; container running", "", nil)
+	_ = e.store.Transition(d.ID, StateRollingBack, StateRolledBack, "engine.rollback.complete",
+		"rollback complete; container running", "",
+		func(rec *models.Record) {
+			// Rollback is a restart event — increment restart_count.
+			rec.Set("restart_count", rec.GetInt("restart_count")+1)
+			// Reset started_at to now (the rolled-back container is a fresh process).
+			rec.Set("started_at", pbDate(time.Now().UTC()))
+		})
 }
 
 // Destroy removes the container and marks the deployment as destroyed.
