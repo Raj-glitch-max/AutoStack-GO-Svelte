@@ -20,6 +20,10 @@
   let cpu = 1.0;
   let memoryMB = 512;
   let replicas = 2;
+  let containerPort = 80;
+  let deployName = "";
+  let deploying = false;
+  let lastDeployResult: any = null;
 
   async function load() {
     loading = true;
@@ -46,6 +50,41 @@
   $: projectOptions = projects.map((p: any) => ({ value: p.id, name: p.name }));
 
   $: selectedAccount = accounts.find((a) => a.id === selectedAccountID);
+
+  async function deployToCloud() {
+    if (!selectedAccountID || !image.trim()) {
+      toast.error("Pick an account and provide an image");
+      return;
+    }
+    if (!deployName.trim()) {
+      deployName = `cloud-deploy-${Date.now()}`;
+    }
+    deploying = true;
+    lastDeployResult = null;
+    try {
+      const result = await client.send("/api/v1/cloud-deployments", {
+        method: "POST",
+        body: JSON.stringify({
+          cloud_account_id: selectedAccountID,
+          name: deployName.trim(),
+          image: image.trim(),
+          cpu_vcpu: Number(cpu) || 1,
+          memory_mb: Number(memoryMB) || 512,
+          replicas: Number(replicas) || 1,
+          container_port: Number(containerPort) || 80,
+        }),
+      });
+      lastDeployResult = result;
+      toast.success(`Cloud deployment queued (id=${(result as any).id?.slice(0, 8) ?? "?"}…)`);
+    } catch (e: any) {
+      // The provider's real error message comes back here — surface it verbatim.
+      const msg = e?.response?.error ?? e?.message ?? "Deploy failed";
+      lastDeployResult = { status: "error", error: msg };
+      toast.error(msg);
+    } finally {
+      deploying = false;
+    }
+  }
 
   async function estimateCost() {
     if (!selectedAccountID) { toast.error("Pick a cloud account"); return; }
@@ -91,18 +130,18 @@
     </p>
   </div>
 
-  <!-- Honest preview banner -->
+  <!-- Honest cloud-execution banner -->
   <Alert color="yellow">
     <div class="flex items-start gap-2">
       <AlertCircle class="w-5 h-5 mt-0.5 shrink-0" />
       <div class="text-xs">
-        <p class="font-semibold">Preview &mdash; not all steps are wired to a real provider deploy yet.</p>
+        <p class="font-semibold">Cloud deployment calls REAL provider SDKs (AWS ECS / Cloud Run / Azure ACA).</p>
         <p class="mt-1">
-          Steps 1–3 are wired: list/pick accounts, projects, and request a cost estimate via the
-          live <code>/api/v1/cost/estimate</code> endpoint. Step 4 (provision) is intentionally
-          not auto-fired from this UI — wiring it requires the deployment_targets writer flow
-          which is the next product pass. To deploy today, use the K8s/operator path under
-          <a href="/app" class="underline">Projects</a>.
+          Whether a deployment actually provisions depends entirely on the cloud_accounts row's credentials.
+          With valid credentials, this will create a real cloud resource and bill you.
+          With demo or invalid credentials, the provider returns its real error
+          (e.g. <code>InvalidClientTokenId</code>, <code>credentials: unsupported file type</code>)
+          and the deployment row is saved with <code>status=error</code>. No fake success.
         </p>
       </div>
     </div>
@@ -219,23 +258,62 @@
       </Card>
     {/if}
 
-    <!-- Step 4: Provision (intentionally not wired in this release) -->
+    <!-- Step 4: Provision — real provider call -->
     {#if step >= 4}
       <Card padding="md">
         <h2 class="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">
-          4. Provision <Badge color="yellow" class="text-xs ml-2">preview</Badge>
+          4. Provision
         </h2>
-        <p class="text-xs text-gray-600 dark:text-gray-400">
-          The provider call to create a deployment_target is intentionally not fired from this
-          UI in this release. The reason: provisioning requires writing to
-          <code>deployment_targets</code> with the right network / registry / DNS scaffolding,
-          and we want to ship that as one coherent wizard rather than a half-done button that
-          could leave you with a stuck cloud resource.
-        </p>
-        <p class="mt-2 text-xs text-gray-600 dark:text-gray-400">
-          To deploy a container today: use the Kubernetes operator path from your
-          <a href="/app" class="underline text-primary-600">Projects</a> page.
-        </p>
+        <div class="space-y-3">
+          <Label class="space-y-1.5">
+            <span class="text-xs">Deployment name (auto-generated if blank)</span>
+            <Input bind:value={deployName} placeholder="e.g. customer-portal-prod" />
+          </Label>
+          <Label class="space-y-1.5">
+            <span class="text-xs">Container port</span>
+            <Input type="number" bind:value={containerPort} min="1" max="65535" />
+          </Label>
+          <div class="rounded border border-orange-200 bg-orange-50 dark:bg-orange-900/20 p-3 text-xs">
+            <strong>This calls a REAL provider API:</strong>
+            <ul class="mt-1 space-y-0.5 list-disc list-inside">
+              <li><code>aws</code> → ECS RegisterTaskDefinition + CreateService / UpdateService</li>
+              <li><code>gcp</code> → Cloud Run admin API CreateService</li>
+              <li><code>azure</code> → ACA admin API (not yet contract-tested)</li>
+            </ul>
+            <p class="mt-1">If your credentials are real, this will create cloud resources you will be billed for.</p>
+          </div>
+          <Button color="primary" on:click={deployToCloud} disabled={deploying || !selectedAccountID}>
+            {deploying ? "Calling provider…" : "Deploy now"}
+          </Button>
+
+          {#if lastDeployResult}
+            <div class="rounded border p-3 text-xs space-y-1
+              {lastDeployResult.status === 'provisioning' ? 'border-blue-200 bg-blue-50 dark:bg-blue-900/20' :
+               lastDeployResult.status === 'error' ? 'border-red-200 bg-red-50 dark:bg-red-900/20' :
+               'border-gray-200 bg-gray-50 dark:bg-gray-800'}">
+              <div class="flex items-center gap-2 flex-wrap">
+                <Badge color={lastDeployResult.status === 'provisioning' ? 'blue' : lastDeployResult.status === 'error' ? 'red' : 'gray'}>
+                  {lastDeployResult.status ?? "unknown"}
+                </Badge>
+                {#if lastDeployResult.id}
+                  <code>{lastDeployResult.id}</code>
+                {/if}
+              </div>
+              {#if lastDeployResult.endpoint_url}
+                <p>endpoint: <a href={lastDeployResult.endpoint_url} target="_blank" rel="noopener" class="underline">{lastDeployResult.endpoint_url}</a></p>
+              {/if}
+              {#if lastDeployResult.external_id}
+                <p>external id: <code>{lastDeployResult.external_id}</code></p>
+              {/if}
+              {#if lastDeployResult.message}
+                <p>{lastDeployResult.message}</p>
+              {/if}
+              {#if lastDeployResult.error}
+                <p class="text-red-700 dark:text-red-300 font-mono">{lastDeployResult.error}</p>
+              {/if}
+            </div>
+          {/if}
+        </div>
       </Card>
     {/if}
   {/if}

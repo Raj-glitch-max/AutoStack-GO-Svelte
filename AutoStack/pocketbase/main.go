@@ -203,6 +203,23 @@ func main() {
 			return controller.HandleCostEstimate(c, app)
 		}, apis.RequireRecordAuth("users"))
 
+		// Cloud deployments — backed by REAL pkg/providers code (AWS SDK v2,
+		// Google Cloud Run SDK).  Whether a Deploy call actually provisions
+		// depends on the credentials in the referenced cloud_accounts row;
+		// without valid credentials the provider returns its actual error.
+		e.Router.POST("/api/v1/cloud-deployments", func(c echo.Context) error {
+			return controller.HandleCloudDeploymentCreate(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/cloud-deployments", func(c echo.Context) error {
+			return controller.HandleCloudDeploymentList(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/cloud-deployments/:id", func(c echo.Context) error {
+			return controller.HandleCloudDeploymentGet(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.DELETE("/api/v1/cloud-deployments/:id", func(c echo.Context) error {
+			return controller.HandleCloudDeploymentDestroy(c, app)
+		}, apis.RequireRecordAuth("users"))
+
 		// Phase 3.9.1 — Reconciler observability endpoints.
 		//
 		// /metrics — JSON snapshot of in-memory counters (atomic; restart resets)
