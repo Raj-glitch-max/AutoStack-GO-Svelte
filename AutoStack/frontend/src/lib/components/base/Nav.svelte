@@ -45,9 +45,10 @@
       <img src="/images/logo_background.png" class="mr-3 h-10" alt="AutoStack Logo" />
     </a>
 
-    <!-- Primary section navigation: makes the platform's main surfaces
-         discoverable. Hidden on small screens to avoid overflow. -->
-    <div class="hidden md:flex items-center gap-1 ml-2">
+    <!-- Primary section navigation: ALWAYS visible. Previously hidden on
+         <md screens which made Cloud / Runtime undiscoverable in narrower
+         windows. Now wraps on small screens. -->
+    <div class="flex items-center gap-1 ml-2 flex-wrap">
       {#each [
         { href: "/app", label: "Projects", match: "/app", exact: true },
         { href: "/app/platform", label: "Platform", match: "/app/platform" },
@@ -57,7 +58,7 @@
         {@const active = nav.exact ? $page.url.pathname === nav.match : $page.url.pathname.startsWith(nav.match)}
         <a
           href={nav.href}
-          class="px-3 py-1.5 text-sm rounded-md transition-colors {active
+          class="px-2.5 py-1 text-xs sm:text-sm rounded-md transition-colors whitespace-nowrap {active
             ? 'bg-white/20 text-white font-medium'
             : 'text-white/80 hover:bg-white/10 hover:text-white'}"
         >

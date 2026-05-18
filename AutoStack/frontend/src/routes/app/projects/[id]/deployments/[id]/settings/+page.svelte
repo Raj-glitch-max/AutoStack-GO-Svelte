@@ -131,70 +131,74 @@
       });
   }
 
+  // Surface field-level PocketBase errors instead of the generic message.
+  function formatPbError(error: any, fallback = "Request failed"): string {
+    const fieldErrors = error?.response?.data ?? error?.data ?? null;
+    if (fieldErrors && typeof fieldErrors === "object") {
+      const parts: string[] = [];
+      for (const [field, info] of Object.entries(fieldErrors)) {
+        const msg = (info as any)?.message ?? String(info);
+        parts.push(`${field}: ${msg}`);
+      }
+      if (parts.length) return parts.join("\n");
+    }
+    return error?.message ?? fallback;
+  }
+
   async function handleCreateBlueprint() {
     if (!$selectedProject) return;
 
-    if (!blueprintName) {
+    if (!blueprintName.trim()) {
       toast.error("Blueprint name is required");
       return;
     }
-
-    if (!blueprintDescription) {
-      toast.error("Blueprint description is required");
-      return;
-    }
-
-    if (!blueprintAvatar) {
-      toast.error("Blueprint avatar is required");
-      return;
-    }
-
     if (!blueprintManifest) {
       toast.error("Blueprint manifest is required");
       return;
     }
 
-    let formData = new FormData();
-    formData.append("avatar", blueprintAvatarFile);
+    // Validate YAML up front so a malformed manifest produces a clear error
+    // instead of an unhandled promise rejection from js-yaml.
+    let parsedManifest: any;
+    try {
+      parsedManifest = yaml.load(blueprintManifest);
+    } catch (e: any) {
+      toast.error("Manifest YAML is invalid: " + (e?.message ?? "parse error"));
+      return;
+    }
 
-    // parse the manifest yaml to json
-    const parsedManifest = yaml.load(blueprintManifest);
-
-    let data: BlueprintsRecord = {
-      name: blueprintName,
-      description: blueprintDescription,
+    const data: BlueprintsRecord = {
+      name: blueprintName.trim(),
+      description: blueprintDescription ?? "",
       manifest: parsedManifest,
       owner: client.authStore?.record?.id ?? ""
     };
 
-    client
-      .collection("blueprints")
-      .create(data)
-      .then((response) => {
-        client
-          .collection("blueprints")
-          .update(response?.id ?? "", formData)
-          .catch((error) => {
-            toast.error(error.message);
-          });
-
-        toast.success("Blueprint created");
-
-        goto(`/app/blueprints/my-blueprints`);
-      })
-      .catch((error) => {
-        toast.error(error.message);
-      })
-      .finally(() => {
-        // update the selected project
-        if ($currentRollout) {
-          updateDataStores({
-            filter: UpdateFilterEnum.ALL,
-            projectId: $currentRollout.project
-          });
+    try {
+      const response = await client.collection("blueprints").create(data);
+      // Avatar upload is optional; only attempt if a file was picked.
+      if (blueprintAvatarFile) {
+        const formData = new FormData();
+        formData.append("avatar", blueprintAvatarFile);
+        try {
+          await client.collection("blueprints").update(response.id, formData);
+        } catch (uploadErr: any) {
+          toast.error("Blueprint created, but avatar upload failed:\n" + formatPbError(uploadErr));
         }
-        modalBluprintOpen = false;
-      });
+      }
+      toast.success("Blueprint created");
+      goto(`/app/blueprints/my-blueprints`);
+    } catch (error: any) {
+      toast.error(formatPbError(error, "Failed to create blueprint"));
+    } finally {
+      if ($currentRollout) {
+        updateDataStores({
+          filter: UpdateFilterEnum.ALL,
+          projectId: $currentRollout.project
+        });
+      }
+      modalBluprintOpen = false;
+    }
   }
 
   async function handleSaveManifest() {
