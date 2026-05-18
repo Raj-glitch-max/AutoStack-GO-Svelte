@@ -42,6 +42,16 @@ type CleanupConfig struct {
 	HistoryRetentionFailed       time.Duration
 	HistoryRetentionInProgress   time.Duration
 	BatchSize                    int
+	// Phase 3.9.8 — provider observation + drift retention.
+	// ObsRetentionAuthoritative: age after which non-contradiction authoritative
+	// observations are eligible for deletion. Contradiction-tagged rows are immortal.
+	ObsRetentionAuthoritative  time.Duration
+	// ObsRetentionAmbiguous: age after which stale/ambiguous/inferred observations
+	// are eligible for deletion.
+	ObsRetentionAmbiguous      time.Duration
+	// DriftRetentionResolved: age (from resolved_at) after which resolved drift
+	// records are eligible for deletion. Unresolved drifts are never deleted.
+	DriftRetentionResolved     time.Duration
 }
 
 // DefaultCleanupConfig pulls retention windows from env vars with the
@@ -58,6 +68,14 @@ func DefaultCleanupConfig() CleanupConfig {
 		HistoryRetentionFailed:     envDays("AUTOSTACK_HISTORY_RETENTION_FAILED_DAYS", 365),
 		HistoryRetentionInProgress: envDays("AUTOSTACK_HISTORY_RETENTION_IN_PROGRESS_DAYS", 365),
 		BatchSize:                  1000,
+		// Phase 3.9.8 defaults:
+		//   Authoritative observations: 90d (same as deployment_history success)
+		//   Ambiguous/stale/inferred:   30d (short; low forensic value after resolution)
+		//   Contradiction-tagged:       immortal (enforced via WHERE contradiction_detected=0)
+		//   Resolved drifts:            90d after resolved_at
+		ObsRetentionAuthoritative: envDays("AUTOSTACK_OBS_RETENTION_AUTHORITATIVE_DAYS", 90),
+		ObsRetentionAmbiguous:     envDays("AUTOSTACK_OBS_RETENTION_AMBIGUOUS_DAYS", 30),
+		DriftRetentionResolved:    envDays("AUTOSTACK_DRIFT_RETENTION_RESOLVED_DAYS", 90),
 	}
 }
 
@@ -151,6 +169,106 @@ func (c *Cleanup) runOnce() {
 	historyDeleted += c.deleteHistory(now.Add(-c.config.HistoryRetentionFailed), "failed")
 	historyDeleted += c.deleteHistory(now.Add(-c.config.HistoryRetentionInProgress), "in_progress")
 	log.Printf("[CLEANUP_HISTORY] deleted=%d", historyDeleted)
+
+	// Phase 3.9.4: purge RESOLVED incidents whose resolved_at is older
+	// than the incident retention TTL. Unresolved incidents are NEVER
+	// touched (PurgeResolvedIncidents enforces this via WHERE status='resolved').
+	incidentsDeleted, err := PurgeResolvedIncidents(c.app, incidentRetentionTTL)
+	if err != nil {
+		log.Printf("[CLEANUP_INCIDENTS_ERR] %v", err)
+	} else if incidentsDeleted > 0 {
+		log.Printf("[CLEANUP_INCIDENTS] deleted=%d (resolved older than %s)", incidentsDeleted, incidentRetentionTTL)
+	}
+
+	// Phase 3.9.2: also purge orphan expired leases (not referenced by
+	// any in-progress operation). Best-effort.
+	r := &Reconciler{app: c.app}
+	if leasesPurged, err := r.PurgeExpiredLeases(c.app); err != nil {
+		log.Printf("[CLEANUP_LEASES_ERR] %v", err)
+	} else if leasesPurged > 0 {
+		log.Printf("[CLEANUP_LEASES] expired_orphans_deleted=%d", leasesPurged)
+	}
+
+	// Phase 3.9.8: purge eligible provider observations and resolved drifts.
+	// Contradiction-tagged observations are NEVER deleted (immortal forensic evidence).
+	// Unresolved drifts are NEVER deleted.
+	obsDeleted := c.deleteProviderObservations(now)
+	if obsDeleted > 0 {
+		log.Printf("[CLEANUP_OBS] deleted=%d", obsDeleted)
+	}
+	driftsDeleted := c.deleteResolvedProviderDrifts(now.Add(-c.config.DriftRetentionResolved))
+	if driftsDeleted > 0 {
+		log.Printf("[CLEANUP_DRIFTS] deleted=%d resolved older than %s", driftsDeleted, c.config.DriftRetentionResolved)
+	}
+}
+
+// incidentRetentionTTL is the window after which a RESOLVED incident is
+// eligible for deletion. Unresolved incidents are immortal regardless.
+// Default 90 days — same as deployment_history success retention.
+//
+// Override via env: AUTOSTACK_INCIDENT_RETENTION_DAYS.
+var incidentRetentionTTL = envDays("AUTOSTACK_INCIDENT_RETENTION_DAYS", 90)
+
+// deleteProviderObservations purges eligible provider_observations rows:
+//   - Non-contradiction authoritative observations older than ObsRetentionAuthoritative
+//   - Non-contradiction ambiguous/stale/inferred observations older than ObsRetentionAmbiguous
+//
+// Contradiction-tagged rows (contradiction_detected = 1) are NEVER deleted — they
+// are immortal forensic evidence of provider divergence. Returns total deleted.
+func (c *Cleanup) deleteProviderObservations(now time.Time) int {
+	authCutoff := now.Add(-c.config.ObsRetentionAuthoritative).Format(time.RFC3339)
+	ambCutoff := now.Add(-c.config.ObsRetentionAmbiguous).Format(time.RFC3339)
+
+	// Delete old authoritative/inferred non-contradiction observations.
+	res1, err := c.app.Dao().DB().NewQuery(
+		"DELETE FROM provider_observations " +
+			"WHERE contradiction_detected = 0 " +
+			"  AND observation_trust IN ('authoritative', 'inferred') " +
+			"  AND observed_at < {:cutoff} " +
+			"LIMIT {:limit}",
+	).Bind(dbx.Params{"cutoff": authCutoff, "limit": c.config.BatchSize}).Execute()
+	n1 := int64(0)
+	if err != nil {
+		log.Printf("[CLEANUP_OBS_ERR] authoritative: %v", err)
+	} else {
+		n1, _ = res1.RowsAffected()
+	}
+
+	// Delete old ambiguous/stale non-contradiction observations.
+	res2, err := c.app.Dao().DB().NewQuery(
+		"DELETE FROM provider_observations " +
+			"WHERE contradiction_detected = 0 " +
+			"  AND observation_trust IN ('ambiguous', 'stale') " +
+			"  AND observed_at < {:cutoff} " +
+			"LIMIT {:limit}",
+	).Bind(dbx.Params{"cutoff": ambCutoff, "limit": c.config.BatchSize}).Execute()
+	n2 := int64(0)
+	if err != nil {
+		log.Printf("[CLEANUP_OBS_ERR] ambiguous/stale: %v", err)
+	} else {
+		n2, _ = res2.RowsAffected()
+	}
+
+	return int(n1 + n2)
+}
+
+// deleteResolvedProviderDrifts purges provider_drifts rows that are resolved
+// and whose resolved_at is older than cutoff. Unresolved drifts are never touched.
+// Returns count deleted.
+func (c *Cleanup) deleteResolvedProviderDrifts(cutoff time.Time) int {
+	cutoffStr := cutoff.Format(time.RFC3339)
+	res, err := c.app.Dao().DB().NewQuery(
+		"DELETE FROM provider_drifts " +
+			"WHERE resolved_at IS NOT NULL AND resolved_at != '' " +
+			"  AND resolved_at < {:cutoff} " +
+			"LIMIT {:limit}",
+	).Bind(dbx.Params{"cutoff": cutoffStr, "limit": c.config.BatchSize}).Execute()
+	if err != nil {
+		log.Printf("[CLEANUP_DRIFTS_ERR] %v", err)
+		return 0
+	}
+	n, _ := res.RowsAffected()
+	return int(n)
 }
 
 // deleteOps removes terminal-status operations older than cutoff while
@@ -187,6 +305,16 @@ func (c *Cleanup) deleteOps(cutoff time.Time, statuses ...string) int {
 	}
 	inClause := "status IN (" + strings.Join(placeholders, ", ") + ")"
 
+	// Phase 3.9.4 retention safety: DO NOT delete operations referenced
+	// by unresolved incidents.
+	// Phase 3.9.6 retention safety: DO NOT delete operations referenced
+	// by runtime_decisions newer than the FK-guard window (90d). This
+	// preserves the decision → operation link for narrative reconstruction.
+	//
+	// Older decisions may legitimately reference deleted operations; the
+	// decision.decision_inputs JSON preserves the relevant fields inline.
+	fkCutoff := time.Now().UTC().AddDate(0, 0, -90).Format(time.RFC3339)
+	params["fk_cutoff"] = fkCutoff
 	res, err := c.app.Dao().DB().NewQuery(
 		"DELETE FROM operations " +
 			"WHERE " + inClause +
@@ -194,6 +322,19 @@ func (c *Cleanup) deleteOps(cutoff time.Time, statuses ...string) int {
 			"  AND (id NOT IN (" +
 			"     SELECT current_operation FROM deployment_targets " +
 			"     WHERE current_operation IS NOT NULL AND current_operation != ''" +
+			"  )) " +
+			"  AND (id NOT IN (" +
+			"     SELECT first_operation_id FROM incidents " +
+			"     WHERE status != 'resolved' AND first_operation_id IS NOT NULL AND first_operation_id != ''" +
+			"  )) " +
+			"  AND (id NOT IN (" +
+			"     SELECT last_operation_id FROM incidents " +
+			"     WHERE status != 'resolved' AND last_operation_id IS NOT NULL AND last_operation_id != ''" +
+			"  )) " +
+			"  AND (id NOT IN (" +
+			"     SELECT operation_id FROM runtime_decisions " +
+			"     WHERE operation_id IS NOT NULL AND operation_id != '' " +
+			"       AND decision_timestamp > {:fk_cutoff}" +
 			"  )) " +
 			"  LIMIT {:limit}",
 	).Bind(params).Execute()
@@ -251,6 +392,22 @@ func envHours(key string, defHours int) time.Duration {
 		return time.Duration(defHours) * time.Hour
 	}
 	return time.Duration(n) * time.Hour
+}
+
+// envMinutes returns the env var parsed as an integer number of minutes.
+func envMinutes(key string, defMinutes int) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return time.Duration(defMinutes) * time.Minute
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 0 {
+		return time.Duration(defMinutes) * time.Minute
+	}
+	if n == 0 {
+		return 0 // explicit zero disables the feature
+	}
+	return time.Duration(n) * time.Minute
 }
 
 // envDays returns the env var parsed as an integer number of days.

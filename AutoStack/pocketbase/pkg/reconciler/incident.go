@@ -10,7 +10,7 @@ import (
 	pb "github.com/pocketbase/pocketbase"
 )
 
-// Phase 3.5 — Incident Explanation Model.
+// Phase 3.5 — IncidentTimeline Explanation Model.
 //
 // An "incident" is a reconstructed operational story: the sequence of
 // operations, history rows, and lifecycle transitions for a single target
@@ -31,8 +31,8 @@ import (
 // Storage: nothing new. The data lives in operations.* and
 // deployment_history.* — this file just exposes a structured reading.
 
-// Incident is a structured narrative for a single target over a time window.
-type Incident struct {
+// IncidentTimeline is a structured narrative for a single target over a time window.
+type IncidentTimeline struct {
 	TargetID      string             `json:"target_id"`
 	RolloutID     string             `json:"rollout_id"`
 	Provider      string             `json:"provider"`
@@ -41,23 +41,23 @@ type Incident struct {
 	CurrentStatus string             `json:"current_status"`
 	DriftState    string             `json:"drift_state"`
 	Ambiguous     bool               `json:"ambiguous"`
-	Events        []IncidentEvent    `json:"events"`
-	Operations    []IncidentOp       `json:"operations"`
+	Events        []IncidentTimelineEvent    `json:"events"`
+	Operations    []IncidentTimelineOp       `json:"operations"`
 	Summary       string             `json:"summary"`
 }
 
-// IncidentEvent is a single deployment_history entry rendered for an incident view.
-type IncidentEvent struct {
+// IncidentTimelineEvent is a single deployment_history entry rendered for an incident view.
+type IncidentTimelineEvent struct {
 	At          time.Time `json:"at"`
 	Action      string    `json:"action"`        // created, updated, deleted, rollback, ambiguous
 	Status      string    `json:"status"`        // in_progress, success, failed
-	OperationID string    `json:"operation_id"`  // links to IncidentOp
+	OperationID string    `json:"operation_id"`  // links to IncidentTimelineOp
 	TriggeredBy string    `json:"triggered_by"`  // causal context: operator-rollback, stale-spec, ambiguity-expiry, etc.
 	Message     string    `json:"message"`
 }
 
-// IncidentOp is a single operations row rendered for an incident view.
-type IncidentOp struct {
+// IncidentTimelineOp is a single operations row rendered for an incident view.
+type IncidentTimelineOp struct {
 	ID          string    `json:"id"`
 	Kind        string    `json:"kind"`         // deploy, destroy, rollback
 	Status      string    `json:"status"`       // in_progress, succeeded, failed, cancelled
@@ -70,14 +70,14 @@ type IncidentOp struct {
 	HasDeployedSpec bool  `json:"has_deployed_spec"` // Phase 3.5
 }
 
-// ReconstructIncident reads operations + history for the target within the
-// window and returns a structured Incident. Returns nil on DB errors with
+// ReconstructIncidentTimeline reads operations + history for the target within the
+// window and returns a structured IncidentTimeline. Returns nil on DB errors with
 // the error logged — best-effort, never throws.
 //
 // The Summary field is a one-paragraph operator-readable rendering of the
 // timeline highlights: status changes, escalations, ambiguity events,
 // drift transitions.
-func ReconstructIncident(app *pb.PocketBase, targetID string, windowStart, windowEnd time.Time) *Incident {
+func ReconstructIncidentTimeline(app *pb.PocketBase, targetID string, windowStart, windowEnd time.Time) *IncidentTimeline {
 	if targetID == "" {
 		return nil
 	}
@@ -89,7 +89,7 @@ func ReconstructIncident(app *pb.PocketBase, targetID string, windowStart, windo
 		return nil
 	}
 
-	incident := &Incident{
+	incident := &IncidentTimeline{
 		TargetID:      targetID,
 		RolloutID:     targetRec.GetString("rollout"),
 		Provider:      targetRec.GetString("provider"),
@@ -130,7 +130,7 @@ func ReconstructIncident(app *pb.PocketBase, targetID string, windowStart, windo
 	for _, r := range opRows {
 		started, _ := time.Parse(time.RFC3339, r.StartedAt)
 		updated, _ := time.Parse(time.RFC3339, r.UpdatedAt)
-		incident.Operations = append(incident.Operations, IncidentOp{
+		incident.Operations = append(incident.Operations, IncidentTimelineOp{
 			ID:              r.ID,
 			Kind:            r.Kind,
 			Status:          r.Status,
@@ -167,7 +167,7 @@ func ReconstructIncident(app *pb.PocketBase, targetID string, windowStart, windo
 	}
 	for _, r := range histRows {
 		at, _ := time.Parse(time.RFC3339, r.Created)
-		incident.Events = append(incident.Events, IncidentEvent{
+		incident.Events = append(incident.Events, IncidentTimelineEvent{
 			At:          at,
 			Action:      r.Action,
 			Status:      r.Status,
@@ -177,16 +177,16 @@ func ReconstructIncident(app *pb.PocketBase, targetID string, windowStart, windo
 		})
 	}
 
-	incident.Summary = summarizeIncident(incident)
+	incident.Summary = summarizeIncidentTimeline(incident)
 	return incident
 }
 
-// summarizeIncident builds a one-paragraph operator-readable summary
+// summarizeIncidentTimeline builds a one-paragraph operator-readable summary
 // highlighting status transitions, escalations, drift, ambiguity.
 //
 // Format: discrete clauses separated by "; ". Designed to be readable in
 // a UI tooltip or a log line. Never multi-line.
-func summarizeIncident(inc *Incident) string {
+func summarizeIncidentTimeline(inc *IncidentTimeline) string {
 	if inc == nil {
 		return ""
 	}

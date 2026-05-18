@@ -18,6 +18,7 @@ package reconciler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -163,7 +164,7 @@ func (r *Reconciler) dispatchDeploy(
 
 	// 2. Open the operations row FIRST so we have an ID for the CAS claim.
 	//    If CAS fails (race lost), we mark this op as cancelled and bail.
-	opID, err := r.createOperation(targetID, "deploy", rolloutRevision)
+	opID, err := r.createOperation(targetID, "deploy", rolloutRevision, cycleID)
 	if err != nil {
 		log.Printf("[DISPATCH_OP_CREATE_ERR] cycle=%s target=%s error=%v", cycleID, targetID, err)
 		return reconcileFailed
@@ -176,28 +177,94 @@ func (r *Reconciler) dispatchDeploy(
 	// rollback target reconstruction, and incident explanation.
 	r.setDeployedSpec(opID, spec)
 
+	// Phase 3.9.2: acquire the per-target execution lease BEFORE the CAS
+	// claim. The lease is the multi-pod safety fence; the CAS is the
+	// intra-pod safety fence. Both are needed: CAS protects against two
+	// goroutines in the same process; the lease protects against two
+	// processes (pods) racing on the same target.
+	setExecStage(r.app, opID, ExecStageQueued, ExecStageLeaseAcquiring)
+	podID := string(currentPodIdentity())
+	leaseEpoch, leaseErr := r.AcquireLease(targetID, podID)
+	if leaseErr != nil {
+		if errors.Is(leaseErr, ErrLeaseHeld) {
+			log.Printf("[LEASE_DENIED] cycle=%s target=%s pod=%s reason=foreign_pod_holds_active_lease", cycleID, targetID, podID)
+		} else {
+			log.Printf("[LEASE_ACQUIRE_ERR] cycle=%s target=%s pod=%s err=%v", cycleID, targetID, podID, leaseErr)
+		}
+		r.cancelOperation(opID, "lease acquisition denied: "+leaseErr.Error())
+		setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageLeaseLost)
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID,
+			RolloutID:      rolloutID,
+			OperationID:    opID,
+			CycleID:        cycleID,
+			DecisionType:   DecisionLeaseAcquireDenied,
+			DecisionReason: "foreign_pod_holds_active_lease",
+			HumanSummary:   "lease acquisition denied; foreign pod holds active lease",
+			DecisionInputs: map[string]interface{}{
+				"this_pod":      podID,
+				"acquire_error": leaseErr.Error(),
+				"kind":          "deploy",
+			},
+			EvidenceRefs: []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileSkipped
+	}
+	log.Printf("[LEASE_ACQUIRED] cycle=%s target=%s pod=%s epoch=%d", cycleID, targetID, podID, leaseEpoch)
+	// Lease cleanup: always release on exit (success or any failure path).
+	// Release is idempotent and CAS-checked, so multiple release attempts
+	// or stale releases are safe.
+	defer func() {
+		if err := r.ReleaseLease(targetID, podID, leaseEpoch); err != nil {
+			log.Printf("[LEASE_RELEASE_ERR] cycle=%s target=%s pod=%s epoch=%d err=%v", cycleID, targetID, podID, leaseEpoch, err)
+		}
+	}()
+
 	// 3. Atomic CAS: take the target only if it is still pending with no
-	//    in-flight operation. This is the load-bearing safety check.
+	//    in-flight operation. This is the load-bearing intra-pod safety
+	//    check. The lease (acquired above) is the inter-pod safety check.
 	claimed, err := r.claimTarget(targetID, opID)
 	if err != nil {
 		log.Printf("[DISPATCH_CLAIM_ERR] cycle=%s target=%s error=%v", cycleID, targetID, err)
 		r.cancelOperation(opID, "claim CAS failed: "+err.Error())
-		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
+		setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageFailed)
 		return reconcileFailed
 	}
 	if claimed != claimSucceeded {
 		log.Printf("[DISPATCH_CLAIM_SKIP] cycle=%s target=%s reason=race_lost", cycleID, targetID)
 		r.cancelOperation(opID, "another reconciler won the claim")
-		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
+		setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageFailed)
 		// Phase 2.7: forensic history for the cancelled attempt so the
 		// timeline reflects "we tried, lost the race". Brief; no
 		// to_revision since we never reached the provider.
 		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", "dispatch race lost; operation cancelled", targetProvider, opID, "dispatch-race-lost")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID,
+			RolloutID:      rolloutID,
+			OperationID:    opID,
+			CycleID:        cycleID,
+			DecisionType:   DecisionDispatchClaimLost,
+			DecisionReason: "intra_pod_cas_race_lost",
+			HumanSummary:   "claimTarget CAS lost; another goroutine in this process won the claim",
+			DecisionInputs: map[string]interface{}{
+				"kind": "deploy",
+			},
+			EvidenceRefs: []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
 		return reconcileSkipped
 	}
 
 	// ExecStage: CAS claimed. Stage = DISPATCHING (about to call provider).
-	setExecStage(r.app, opID, ExecStageQueued, ExecStageDispatching)
+	setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageDispatching)
+
+	// Phase 3.9.2: start the lease refresh sidecar. The lease MUST be
+	// refreshed throughout the operation's lifetime. If the refresh loop
+	// detects loss, leaseLostCh signals; we check it between provider
+	// boundaries and on key transitions.
+	leaseLostCh := make(chan struct{}, 1)
+	leaseRefreshCtx, leaseRefreshCancel := context.WithCancel(ctx)
+	defer leaseRefreshCancel()
+	go r.LeaseRefreshLoop(leaseRefreshCtx, targetID, podID, leaseEpoch, leaseLostCh)
 
 	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s rollout_revision=%s action=%s pod=%s", cycleID, targetID, opID, rolloutRevision, historyAction, currentPodIdentity())
 	r.writeHistory(rolloutID, targetID, historyAction, "in_progress", "", "", "", targetProvider, opID, "")
@@ -236,6 +303,35 @@ func (r *Reconciler) dispatchDeploy(
 	log.Printf("[DEPLOY_START] cycle=%s target=%s operation=%s image=%s/%s:%s region=%s",
 		cycleID, targetID, opID, spec.Image.Registry, spec.Image.Repository, spec.Image.Tag, account.Region)
 	startedAt := time.Now()
+
+	// Phase 3.9.2: verify lease ownership immediately before the provider
+	// mutation. If lease was lost (e.g., DB stall caused refresh to fail
+	// past expiration, then another pod stole it), abort. No provider
+	// mutation occurs → stage = LEASE_LOST (not InterruptedUnknownOutcome).
+	if !r.VerifyLease(targetID, podID, leaseEpoch) {
+		log.Printf("[LEASE_VERIFY_FAIL_PRE_DEPLOY] cycle=%s target=%s pod=%s epoch=%d", cycleID, targetID, podID, leaseEpoch)
+		setExecStage(r.app, opID, ExecStageDispatching, ExecStageLeaseLost)
+		r.completeOperation(opID, "failed", "lease lost before provider mutation; no cloud changes made")
+		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", "lease lost before provider call", targetProvider, opID, "lease-lost-pre-call")
+		r.releaseTarget(opID, targetID, "creating", "pending", "lease lost before provider call; safe to re-dispatch")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID,
+			RolloutID:      rolloutID,
+			OperationID:    opID,
+			CycleID:        cycleID,
+			DecisionType:   DecisionLeaseLostPreCall,
+			DecisionReason: "lease_invalid_pre_provider_call",
+			HumanSummary:   "lease invalid before deploy call; no provider mutation occurred; safe to re-dispatch",
+			DecisionInputs: map[string]interface{}{
+				"this_pod":    podID,
+				"lease_epoch": leaseEpoch,
+				"kind":        "deploy",
+			},
+			EvidenceRefs: []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileFailed
+	}
+
 	// ExecStage: provider Deploy() call is imminent. Stage = PROVISIONING.
 	setExecStage(r.app, opID, ExecStageDispatching, ExecStageProvisioning)
 
@@ -243,6 +339,41 @@ func (r *Reconciler) dispatchDeploy(
 
 	durationMs := time.Since(startedAt).Milliseconds()
 	log.Printf("[DEPLOY_END] cycle=%s target=%s operation=%s duration_ms=%d err=%v", cycleID, targetID, opID, durationMs, deployErr)
+
+	// Phase 3.9.2: check for lease loss DURING the provider call. If lost,
+	// the provider mutation may have committed cloud changes but our
+	// authority to claim success or failure is gone — another pod owns
+	// this target now. Transition to InterruptedUnknownOutcome (operator
+	// must investigate).
+	select {
+	case <-leaseLostCh:
+		log.Printf("[LEASE_LOST_DURING_DEPLOY] cycle=%s target=%s pod=%s epoch=%d — outcome unknown", cycleID, targetID, podID, leaseEpoch)
+		setExecStage(r.app, opID, ExecStageProvisioning, ExecStageInterruptedUnknownOutcome)
+		r.completeOperation(opID, "failed", "lease lost during provider call; outcome unknown; operator MUST investigate")
+		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", "lease lost during provider mutation; outcome unknown", targetProvider, opID, "lease-lost-mid-call")
+		// Release the target back to error so an operator (or the new lease holder)
+		// can re-evaluate. We CANNOT release to "running" — that would lie.
+		r.releaseTarget(opID, targetID, "creating", "error", "lease lost during deploy; cloud state unknown")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID,
+			RolloutID:      rolloutID,
+			OperationID:    opID,
+			CycleID:        cycleID,
+			DecisionType:   DecisionLeaseLostMidCall,
+			DecisionReason: "lease_lost_during_provider_mutation",
+			HumanSummary:   "lease lost during deploy; cloud-side outcome unknown; operator must investigate",
+			DecisionInputs: map[string]interface{}{
+				"this_pod":          podID,
+				"lease_epoch":       leaseEpoch,
+				"provider_duration": durationMs,
+				"kind":              "deploy",
+			},
+			EvidenceRefs: []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileFailed
+	default:
+		// lease still held; proceed to outcome interpretation
+	}
 
 	// 5. Stale-spec check: did the rollout move while we were deploying?
 	stale := r.rolloutMovedSince(rolloutID, rolloutRevision)
@@ -261,30 +392,77 @@ func (r *Reconciler) dispatchDeploy(
 		postSuccessMessage = "deploy completed; honoring pending destroy intent"
 	}
 
+	// Phase 3.9.8: canonical provider name for deploy-result observations.
+	deployObsProvider := providerToProviderName(account.Provider)
+
 	// 6. Branch on outcome.
 	switch {
 	case deployErr != nil:
 		// Hard error: refuse to claim success. Phase 2.6: a hard error is
 		// not a stale outcome; reset the stale counter so we don't carry
 		// stale-loop state across unrelated failures.
+		// Phase 3.9.3 Runtime Integration: route through the canonical
+		// retry decision engine. The action is authoritative — no implicit
+		// "release-and-wait-for-tick" fallback.
 		msg := sanitizeError(deployErr.Error())
+		leaseRemaining := LeaseDuration
+		leaseValid := r.VerifyLease(targetID, podID, leaseEpoch)
+		classDecision, engineDecision := r.resolveRetryDecision(opID, p, deployErr, leaseRemaining, leaseValid)
+
+		// Phase 3.9.8: record ambiguous deploy-result observation before any
+		// runtime state changes. Deploy error means provider state is unknown.
+		r.RecordProviderObservation(ProviderObservationInput{
+			TargetID:          targetID,
+			OperationID:       opID,
+			CycleID:           cycleID,
+			Provider:          deployObsProvider,
+			ObservationSource: ObservationSourceDeployResult,
+			ProviderState:     providers.CanonicalStateUnknown,
+			Trust:             ObservationTrustAmbiguous,
+			EvidenceJSON: map[string]interface{}{
+				"error_class":     string(classDecision.Class),
+				"native_code":     classDecision.NativeCode,
+				"forensic_reason": classDecision.ForensicReason,
+			},
+		})
+
 		setExecStage(r.app, opID, ExecStageProvisioning, ExecStageFailed)
-		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", "", msg, targetProvider, opID, "")
-		r.releaseTarget(opID, targetID, "creating", "error", msg)
-		r.recordTargetFailureWithCategory(targetID, ClassifyError(deployErr.Error()))
+		r.completeOperation(opID, "failed", msg+" ["+string(classDecision.Class)+"]")
+		r.recordTargetFailureWithClass(targetID, classDecision.Class)
+		r.recordRetryState(opID, classDecision.Class, r.loadRetryCount(opID)+1, engineDecision.NextAttemptAt, classDecision.NativeCode, classDecision.ForensicReason)
 		r.clearStaleCount(targetID)
+		r.applyRetryAction(engineDecision, classDecision, opID, rolloutID, targetID, historyAction, targetProvider, "creating", msg, cycleID)
 		return reconcileFailed
 
 	case result != nil && result.Status == "error":
 		// Deploy returned (result, nil) but result.Status=error: provider
-		// observed a Ready=FAILED condition. Same treatment as a hard error.
+		// observed a Ready=FAILED condition. Spec-validation-style failure.
+		// Phase 3.9.3: classify as RetryClassNever (provider rejected the spec).
 		msg := sanitizeError(result.Message)
+
+		// Phase 3.9.8: record authoritative failure observation — provider
+		// explicitly confirmed error state.
+		r.RecordProviderObservation(ProviderObservationInput{
+			TargetID:          targetID,
+			OperationID:       opID,
+			CycleID:           cycleID,
+			Provider:          deployObsProvider,
+			ObservationSource: ObservationSourceDeployResult,
+			ProviderState:     providers.CanonicalStateError,
+			Trust:             ObservationTrustAuthoritative,
+			EvidenceJSON: map[string]interface{}{
+				"result_message": result.Message,
+				"external_id":    result.ExternalID,
+				"retry_class":    string(providers.RetryClassNever),
+			},
+		})
+
 		setExecStage(r.app, opID, ExecStageProvisioning, ExecStageFailed)
-		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, msg, targetProvider, opID, "")
+		r.completeOperation(opID, "failed", msg+" [retry_never]")
+		r.writeHistory(rolloutID, targetID, historyAction, "failed", "", result.ExternalID, msg, targetProvider, opID, string(providers.RetryClassNever))
 		r.releaseTargetWithExternal(opID, targetID, "creating", "error", result.ExternalID, "", msg)
-		r.recordTargetFailureWithCategory(targetID, FailurePermanent)
+		r.recordTargetFailureWithClass(targetID, providers.RetryClassNever)
+		r.recordRetryState(opID, providers.RetryClassNever, r.loadRetryCount(opID)+1, time.Time{}, "PROVIDER_REJECTED", msg)
 		r.clearStaleCount(targetID)
 		return reconcileFailed
 
@@ -336,6 +514,33 @@ func (r *Reconciler) dispatchDeploy(
 		// baseline: the reconciler can now compare rollout.updated_at vs
 		// last_deployed_revision on the target to detect spec drift without a
 		// full spec-content comparison.
+
+		// Phase 3.9.8: record inferred deploy-result observation before any
+		// runtime state changes. Trust is inferred — we set the target to
+		// "updating" and wait for GetStatus to confirm convergence to "running".
+		// RuntimeExpectedState is "" so contradiction detection is skipped;
+		// the ongoing GetStatus polls (ObservationSourcePoll) handle that.
+		{
+			resultState := providers.NormalizeProviderState(result.Status)
+			if resultState == providers.CanonicalStateUnknown || resultState == "" {
+				resultState = providers.CanonicalStateCreating
+			}
+			r.RecordProviderObservation(ProviderObservationInput{
+				TargetID:          targetID,
+				OperationID:       opID,
+				CycleID:           cycleID,
+				Provider:          deployObsProvider,
+				ObservationSource: ObservationSourceDeployResult,
+				ProviderState:     resultState,
+				Trust:             ObservationTrustInferred,
+				EvidenceJSON: map[string]interface{}{
+					"external_id":     result.ExternalID,
+					"post_status":     postSuccessStatus,
+					"rollout_revision": rolloutRevision,
+				},
+			})
+		}
+
 		checkpointWithRevision := result.CheckpointData
 		if checkpointWithRevision == nil {
 			checkpointWithRevision = make(map[string]interface{})
@@ -365,6 +570,9 @@ func (r *Reconciler) dispatchDeploy(
 		}
 		r.clearTargetFailure(targetID)
 		r.clearStaleCount(targetID)
+		// Phase 3.9.3: clear persisted retry schedule on success so the
+		// next failure starts at the bottom of the backoff curve.
+		r.clearRetrySchedule(targetID)
 		if r.metrics != nil {
 			r.metrics.IncDeploySucceeded()
 		}
@@ -385,7 +593,7 @@ func (r *Reconciler) dispatchDestroy(
 	targetID, rolloutID, externalID string,
 	cycleID, targetProvider string,
 ) (resultOut reconcileResult) {
-	opID, err := r.createOperation(targetID, "destroy", "")
+	opID, err := r.createOperation(targetID, "destroy", "", cycleID)
 	if err != nil {
 		log.Printf("[DISPATCH_OP_CREATE_ERR] cycle=%s target=%s error=%v", cycleID, targetID, err)
 		return reconcileFailed
@@ -393,17 +601,59 @@ func (r *Reconciler) dispatchDestroy(
 	// ExecStage: operation created; not yet claimed. Stage = QUEUED.
 	setExecStage(r.app, opID, "", ExecStageQueued)
 
+	// Phase 3.9.2: lease acquisition before CAS claim.
+	setExecStage(r.app, opID, ExecStageQueued, ExecStageLeaseAcquiring)
+	podID := string(currentPodIdentity())
+	leaseEpoch, leaseErr := r.AcquireLease(targetID, podID)
+	if leaseErr != nil {
+		if errors.Is(leaseErr, ErrLeaseHeld) {
+			log.Printf("[LEASE_DENIED] cycle=%s target=%s pod=%s kind=destroy reason=foreign_pod_holds_lease", cycleID, targetID, podID)
+		} else {
+			log.Printf("[LEASE_ACQUIRE_ERR] cycle=%s target=%s pod=%s kind=destroy err=%v", cycleID, targetID, podID, leaseErr)
+		}
+		r.cancelOperation(opID, "destroy lease denied: "+leaseErr.Error())
+		setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageLeaseLost)
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionLeaseAcquireDenied,
+			DecisionReason: "foreign_pod_holds_active_lease",
+			HumanSummary:   "destroy lease acquisition denied; foreign pod holds active lease",
+			DecisionInputs: map[string]interface{}{"this_pod": podID, "acquire_error": leaseErr.Error(), "kind": "destroy"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileSkipped
+	}
+	defer func() {
+		if err := r.ReleaseLease(targetID, podID, leaseEpoch); err != nil {
+			log.Printf("[LEASE_RELEASE_ERR] cycle=%s target=%s pod=%s epoch=%d kind=destroy err=%v", cycleID, targetID, podID, leaseEpoch, err)
+		}
+	}()
+
 	claimed, err := r.claimTarget(targetID, opID)
 	if err != nil || claimed != claimSucceeded {
 		r.cancelOperation(opID, "destroy claim lost or errored")
-		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
+		setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageFailed)
 		// Phase 2.7: forensic history for cancelled destroy attempts.
 		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", externalID, "destroy claim lost or errored", targetProvider, opID, "")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionDispatchClaimLost,
+			DecisionReason: "intra_pod_cas_race_lost",
+			HumanSummary:   "destroy claimTarget CAS lost",
+			DecisionInputs: map[string]interface{}{"kind": "destroy"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
 		return reconcileSkipped
 	}
 
 	// ExecStage: CAS claimed. Stage = DISPATCHING (about to call provider).
-	setExecStage(r.app, opID, ExecStageQueued, ExecStageDispatching)
+	setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageDispatching)
+
+	// Phase 3.9.2: lease refresh sidecar for destroy.
+	leaseLostCh := make(chan struct{}, 1)
+	leaseRefreshCtx, leaseRefreshCancel := context.WithCancel(ctx)
+	defer leaseRefreshCancel()
+	go r.LeaseRefreshLoop(leaseRefreshCtx, targetID, podID, leaseEpoch, leaseLostCh)
 
 	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s kind=destroy pod=%s", cycleID, targetID, opID, currentPodIdentity())
 	r.writeHistory(rolloutID, targetID, "deleted", "in_progress", "", "", "", targetProvider, opID, "")
@@ -441,17 +691,61 @@ func (r *Reconciler) dispatchDestroy(
 		Region:     account.Region,
 	}
 
+	// Phase 3.9.2: lease verification before destroy call.
+	if !r.VerifyLease(targetID, podID, leaseEpoch) {
+		log.Printf("[LEASE_VERIFY_FAIL_PRE_DESTROY] cycle=%s target=%s pod=%s epoch=%d", cycleID, targetID, podID, leaseEpoch)
+		setExecStage(r.app, opID, ExecStageDispatching, ExecStageLeaseLost)
+		r.completeOperation(opID, "failed", "lease lost before destroy; no cloud changes made")
+		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", externalID, "lease lost before destroy", targetProvider, opID, "lease-lost-pre-call")
+		// Release target back to deleting state so the next eligible holder picks it up.
+		r.releaseTarget(opID, targetID, "deleting", "deleting", "lease lost; safe to re-dispatch")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionLeaseLostPreCall,
+			DecisionReason: "lease_invalid_pre_provider_call",
+			HumanSummary:   "lease invalid before destroy call; no provider mutation occurred",
+			DecisionInputs: map[string]interface{}{"this_pod": podID, "lease_epoch": leaseEpoch, "kind": "destroy"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileFailed
+	}
+
 	// ExecStage: provider Destroy() initiation is imminent. Stage = DELETING.
 	setExecStage(r.app, opID, ExecStageDispatching, ExecStageDeleting)
 
 	if err := p.Destroy(destroyCtx, account, target); err != nil {
 		msg := sanitizeError(err.Error())
+		// Phase 3.9.3 Runtime Integration: canonical retry routing.
+		leaseRemaining := LeaseDuration
+		leaseValid := r.VerifyLease(targetID, podID, leaseEpoch)
+		classDecision, engineDecision := r.resolveRetryDecision(opID, p, err, leaseRemaining, leaseValid)
 		setExecStage(r.app, opID, ExecStageDeleting, ExecStageFailed)
-		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", "", msg, targetProvider, opID, "")
-		r.releaseTarget(opID, targetID, "deleting", "error", msg)
-		r.recordTargetFailureWithCategory(targetID, ClassifyError(err.Error()))
+		r.completeOperation(opID, "failed", msg+" ["+string(classDecision.Class)+"]")
+		r.recordTargetFailureWithClass(targetID, classDecision.Class)
+		r.recordRetryState(opID, classDecision.Class, r.loadRetryCount(opID)+1, engineDecision.NextAttemptAt, classDecision.NativeCode, classDecision.ForensicReason)
+		r.applyRetryAction(engineDecision, classDecision, opID, rolloutID, targetID, "deleted", targetProvider, "deleting", msg, cycleID)
 		return reconcileFailed
+	}
+
+	// Phase 3.9.2: check for lease loss DURING destroy. UpdateService+DeleteService
+	// may have committed cloud-side; outcome is unknown if we lost ownership.
+	select {
+	case <-leaseLostCh:
+		log.Printf("[LEASE_LOST_DURING_DESTROY] cycle=%s target=%s pod=%s epoch=%d — outcome unknown", cycleID, targetID, podID, leaseEpoch)
+		setExecStage(r.app, opID, ExecStageDeleting, ExecStageInterruptedUnknownOutcome)
+		r.completeOperation(opID, "failed", "lease lost during destroy; outcome unknown")
+		r.writeHistory(rolloutID, targetID, "deleted", "failed", "", "", "lease lost during destroy; outcome unknown", targetProvider, opID, "lease-lost-mid-call")
+		r.releaseTarget(opID, targetID, "deleting", "error", "lease lost during destroy")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionLeaseLostMidCall,
+			DecisionReason: "lease_lost_during_provider_mutation",
+			HumanSummary:   "lease lost during destroy; cloud-side outcome unknown",
+			DecisionInputs: map[string]interface{}{"this_pod": podID, "lease_epoch": leaseEpoch, "kind": "destroy"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileFailed
+	default:
 	}
 
 	// Phase 3.3: destroy-confirm is owned by the reconciler, not the provider.
@@ -480,6 +774,7 @@ func (r *Reconciler) dispatchDestroy(
 	// already false).
 	r.clearPendingDestroy(targetID)
 	r.clearTargetFailure(targetID)
+	r.clearRetrySchedule(targetID)
 	if r.metrics != nil {
 		r.metrics.IncDestroySucceeded()
 	}
@@ -520,7 +815,7 @@ func (r *Reconciler) dispatchRollback(
 		return reconcileFailed
 	}
 
-	opID, err := r.createOperation(targetID, "rollback", targetRevision)
+	opID, err := r.createOperation(targetID, "rollback", targetRevision, cycleID)
 	if err != nil {
 		log.Printf("[DISPATCH_OP_CREATE_ERR] cycle=%s target=%s kind=rollback error=%v", cycleID, targetID, err)
 		return reconcileFailed
@@ -528,16 +823,54 @@ func (r *Reconciler) dispatchRollback(
 	// ExecStage: operation created; not yet claimed. Stage = QUEUED.
 	setExecStage(r.app, opID, "", ExecStageQueued)
 
+	// Phase 3.9.2: lease acquisition for rollback.
+	setExecStage(r.app, opID, ExecStageQueued, ExecStageLeaseAcquiring)
+	podID := string(currentPodIdentity())
+	leaseEpoch, leaseErr := r.AcquireLease(targetID, podID)
+	if leaseErr != nil {
+		log.Printf("[LEASE_DENIED] cycle=%s target=%s pod=%s kind=rollback err=%v", cycleID, targetID, podID, leaseErr)
+		r.cancelOperation(opID, "rollback lease denied: "+leaseErr.Error())
+		setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageLeaseLost)
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionLeaseAcquireDenied,
+			DecisionReason: "foreign_pod_holds_active_lease",
+			HumanSummary:   "rollback lease acquisition denied",
+			DecisionInputs: map[string]interface{}{"this_pod": podID, "acquire_error": leaseErr.Error(), "kind": "rollback"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileSkipped
+	}
+	defer func() {
+		if err := r.ReleaseLease(targetID, podID, leaseEpoch); err != nil {
+			log.Printf("[LEASE_RELEASE_ERR] cycle=%s target=%s pod=%s kind=rollback err=%v", cycleID, targetID, podID, err)
+		}
+	}()
+
 	claimed, err := r.claimTarget(targetID, opID)
 	if err != nil || claimed != claimSucceeded {
 		r.cancelOperation(opID, "rollback claim lost or errored")
-		setExecStage(r.app, opID, ExecStageQueued, ExecStageFailed)
+		setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageFailed)
 		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", externalID, "rollback claim lost or errored", targetProvider, opID, "")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionDispatchClaimLost,
+			DecisionReason: "intra_pod_cas_race_lost",
+			HumanSummary:   "rollback claimTarget CAS lost",
+			DecisionInputs: map[string]interface{}{"kind": "rollback"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
 		return reconcileSkipped
 	}
 
 	// ExecStage: CAS claimed. Stage = DISPATCHING.
-	setExecStage(r.app, opID, ExecStageQueued, ExecStageDispatching)
+	setExecStage(r.app, opID, ExecStageLeaseAcquiring, ExecStageDispatching)
+
+	// Phase 3.9.2: lease refresh sidecar for rollback.
+	leaseLostCh := make(chan struct{}, 1)
+	leaseRefreshCtx, leaseRefreshCancel := context.WithCancel(ctx)
+	defer leaseRefreshCancel()
+	go r.LeaseRefreshLoop(leaseRefreshCtx, targetID, podID, leaseEpoch, leaseLostCh)
 
 	log.Printf("[DISPATCH_CLAIM] cycle=%s target=%s operation=%s kind=rollback to_revision=%s pod=%s", cycleID, targetID, opID, targetRevision, currentPodIdentity())
 	r.writeHistory(rolloutID, targetID, "rollback", "in_progress", "", "", "", targetProvider, opID, "operator-rollback")
@@ -567,31 +900,129 @@ func (r *Reconciler) dispatchRollback(
 		Region:     account.Region,
 	}
 
+	// Phase 3.9.2: verify lease before rollback call.
+	if !r.VerifyLease(targetID, podID, leaseEpoch) {
+		log.Printf("[LEASE_VERIFY_FAIL_PRE_ROLLBACK] cycle=%s target=%s pod=%s epoch=%d", cycleID, targetID, podID, leaseEpoch)
+		setExecStage(r.app, opID, ExecStageDispatching, ExecStageLeaseLost)
+		r.completeOperation(opID, "failed", "lease lost before rollback")
+		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", externalID, "lease lost before rollback", targetProvider, opID, "lease-lost-pre-call")
+		r.releaseTarget(opID, targetID, "rolling_back", "error", "lease lost before rollback")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionLeaseLostPreCall,
+			DecisionReason: "lease_invalid_pre_provider_call",
+			HumanSummary:   "lease invalid before rollback call; no provider mutation occurred",
+			DecisionInputs: map[string]interface{}{"this_pod": podID, "lease_epoch": leaseEpoch, "kind": "rollback"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileFailed
+	}
+
 	// ExecStage: provider Rollback() call is imminent. Stage = ROLLING_BACK.
 	setExecStage(r.app, opID, ExecStageDispatching, ExecStageRollingBack)
 
 	result, rollbackErr := p.Rollback(rollbackCtx, account, target, targetRevision)
+
+	// Phase 3.9.2: check lease loss during rollback. The cloud-side
+	// UpdateService may have already updated to the prior task definition;
+	// outcome is unknown without our authority to confirm.
+	select {
+	case <-leaseLostCh:
+		log.Printf("[LEASE_LOST_DURING_ROLLBACK] cycle=%s target=%s pod=%s epoch=%d", cycleID, targetID, podID, leaseEpoch)
+		setExecStage(r.app, opID, ExecStageRollingBack, ExecStageInterruptedUnknownOutcome)
+		r.completeOperation(opID, "failed", "lease lost during rollback; outcome unknown")
+		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", externalID, "lease lost during rollback", targetProvider, opID, "lease-lost-mid-call")
+		r.releaseTarget(opID, targetID, "rolling_back", "error", "lease lost during rollback")
+		r.recordRetryState(opID, providers.RetryClassProviderUncertain, r.loadRetryCount(opID)+1, time.Time{}, "LEASE_LOST", "lease lost mid-rollback")
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID, RolloutID: rolloutID, OperationID: opID, CycleID: cycleID,
+			DecisionType:   DecisionLeaseLostMidCall,
+			DecisionReason: "lease_lost_during_provider_mutation",
+			HumanSummary:   "lease lost during rollback; cloud-side outcome unknown",
+			DecisionInputs: map[string]interface{}{"this_pod": podID, "lease_epoch": leaseEpoch, "kind": "rollback"},
+			EvidenceRefs:   []EvidenceRef{{Collection: "operations", ID: opID}},
+		})
+		return reconcileFailed
+	default:
+	}
 	if rollbackErr != nil {
 		msg := sanitizeError(rollbackErr.Error())
+		// Phase 3.9.3 Runtime Integration: canonical retry routing.
+		leaseRemaining := LeaseDuration
+		leaseValid := r.VerifyLease(targetID, podID, leaseEpoch)
+		classDecision, engineDecision := r.resolveRetryDecision(opID, p, rollbackErr, leaseRemaining, leaseValid)
+
+		// Phase 3.9.8: record ambiguous rollback-result observation before
+		// any runtime state changes. Rollback error means provider state unknown.
+		r.RecordProviderObservation(ProviderObservationInput{
+			TargetID:          targetID,
+			OperationID:       opID,
+			CycleID:           cycleID,
+			Provider:          providerName,
+			ObservationSource: ObservationSourceRollbackResult,
+			ProviderState:     providers.CanonicalStateUnknown,
+			Trust:             ObservationTrustAmbiguous,
+			EvidenceJSON: map[string]interface{}{
+				"error_class":     string(classDecision.Class),
+				"native_code":     classDecision.NativeCode,
+				"forensic_reason": classDecision.ForensicReason,
+			},
+		})
+
 		setExecStage(r.app, opID, ExecStageRollingBack, ExecStageFailed)
-		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", "", msg, targetProvider, opID, "")
-		r.releaseTarget(opID, targetID, "rolling_back", "error", msg)
-		r.recordTargetFailureWithCategory(targetID, ClassifyError(rollbackErr.Error()))
+		r.completeOperation(opID, "failed", msg+" ["+string(classDecision.Class)+"]")
+		r.recordTargetFailureWithClass(targetID, classDecision.Class)
+		r.recordRetryState(opID, classDecision.Class, r.loadRetryCount(opID)+1, engineDecision.NextAttemptAt, classDecision.NativeCode, classDecision.ForensicReason)
+		r.applyRetryAction(engineDecision, classDecision, opID, rolloutID, targetID, "rollback", targetProvider, "rolling_back", msg, cycleID)
 		return reconcileFailed
 	}
 	// Provider-observed failure status (e.g., revision not found).
 	if result != nil && result.Status == "error" {
 		msg := sanitizeError(result.Message)
+
+		// Phase 3.9.8: record authoritative failure observation before runtime
+		// state changes. Provider explicitly confirmed rollback failed.
+		r.RecordProviderObservation(ProviderObservationInput{
+			TargetID:          targetID,
+			OperationID:       opID,
+			CycleID:           cycleID,
+			Provider:          providerName,
+			ObservationSource: ObservationSourceRollbackResult,
+			ProviderState:     providers.CanonicalStateError,
+			Trust:             ObservationTrustAuthoritative,
+			EvidenceJSON: map[string]interface{}{
+				"result_message": result.Message,
+				"external_id":    result.ExternalID,
+				"retry_class":    string(providers.RetryClassNever),
+			},
+		})
+
 		setExecStage(r.app, opID, ExecStageRollingBack, ExecStageFailed)
-		r.completeOperation(opID, "failed", msg)
-		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", result.ExternalID, msg, targetProvider, opID, "")
+		r.completeOperation(opID, "failed", msg+" [retry_never]")
+		r.writeHistory(rolloutID, targetID, "rollback", "failed", "", result.ExternalID, msg, targetProvider, opID, string(providers.RetryClassNever))
 		r.releaseTargetWithExternal(opID, targetID, "rolling_back", "error", result.ExternalID, "", msg)
-		r.recordTargetFailureWithCategory(targetID, FailurePermanent)
+		r.recordTargetFailureWithClass(targetID, providers.RetryClassNever)
+		r.recordRetryState(opID, providers.RetryClassNever, r.loadRetryCount(opID)+1, time.Time{}, "PROVIDER_REJECTED", msg)
 		return reconcileFailed
 	}
 
 	// ExecStage: Rollback() confirmed. Stage = ROLLED_BACK (terminal).
+	// Phase 3.9.8: record authoritative rolled-back observation before any
+	// runtime state changes.
+	r.RecordProviderObservation(ProviderObservationInput{
+		TargetID:             targetID,
+		OperationID:          opID,
+		CycleID:              cycleID,
+		Provider:             providerName,
+		ObservationSource:    ObservationSourceRollbackResult,
+		ProviderState:        providers.CanonicalStateRolledBack,
+		RuntimeExpectedState: "rolled_back",
+		Trust:                ObservationTrustAuthoritative,
+		EvidenceJSON: map[string]interface{}{
+			"target_revision": targetRevision,
+		},
+	})
+
 	rolledToRevision := targetRevision
 	if result != nil && result.ExternalID != "" {
 		rolledToRevision = result.ExternalID
@@ -601,6 +1032,7 @@ func (r *Reconciler) dispatchRollback(
 	r.writeHistory(rolloutID, targetID, "rollback", "success", targetRevision, rolledToRevision, "", targetProvider, opID, "operator-rollback")
 	r.releaseTarget(opID, targetID, "rolling_back", "rolled_back", "rollback completed")
 	r.clearTargetFailure(targetID)
+	r.clearRetrySchedule(targetID)
 	if r.metrics != nil {
 		r.metrics.IncRollbackSucceeded()
 	}
@@ -676,8 +1108,53 @@ func (r *Reconciler) confirmDestroyInReconciler(
 		case <-ticker.C:
 			ts, err := p.GetStatus(pollCtx, account, target)
 			if err != nil {
+				// Phase 3.9.8: record ambiguous destroy-poll observation before
+				// continuing. Provider state is unknown on error.
+				retryDecision := providers.ClassifyProviderError(err)
+				r.RecordProviderObservation(ProviderObservationInput{
+					TargetID:             target.ID,
+					OperationID:          opID,
+					CycleID:              cycleID,
+					Provider:             providerName,
+					ObservationSource:    ObservationSourceReconciliationRead,
+					ProviderState:        providers.CanonicalStateUnknown,
+					RuntimeExpectedState: "deleted",
+					Trust:                ObservationTrustAmbiguous,
+					EvidenceJSON: map[string]interface{}{
+						"destroy_confirm_semantic": semantic,
+						"error_class":              string(retryDecision.Class),
+						"native_code":              retryDecision.NativeCode,
+					},
+				})
 				log.Printf("[DESTROY_CONFIRM_POLL_ERR] cycle=%s op=%s err=%v — continuing poll", cycleID, opID, err)
 				continue
+			}
+			// Phase 3.9.8: record destroy-poll observation. Trust derives from
+			// confidence level; ambiguity overrides to ambiguous.
+			{
+				obsTrust := classifyObservationTrustFromConfidence(ts.ConfidenceLevel)
+				if ts.Ambiguous {
+					obsTrust = ObservationTrustAmbiguous
+				}
+				normalizedState := providers.NormalizeProviderState(ts.Status)
+				if !providers.IsCanonicalProviderState(normalizedState) {
+					obsTrust = ObservationTrustAmbiguous
+				}
+				r.RecordProviderObservation(ProviderObservationInput{
+					TargetID:             target.ID,
+					OperationID:          opID,
+					CycleID:              cycleID,
+					Provider:             providerName,
+					ObservationSource:    ObservationSourceReconciliationRead,
+					ProviderState:        normalizedState,
+					RuntimeExpectedState: "deleted",
+					Trust:                obsTrust,
+					EvidenceJSON: map[string]interface{}{
+						"destroy_confirm_semantic": semantic,
+						"confidence_level":         ts.ConfidenceLevel,
+						"native_state":             ts.NativeState,
+					},
+				})
 			}
 			if ts != nil && ts.Status == "deleted" {
 				log.Printf("[DESTROY_CONFIRM_OK] cycle=%s op=%s semantic=%s", cycleID, opID, semantic)
@@ -743,7 +1220,10 @@ func (r *Reconciler) setLastDeployedRevision(targetID, rolloutRevision string) {
 // createOperation inserts a new in_progress operation row and returns its ID.
 // Phase 3.8: stamps owned_by_pod with the current process's identity for
 // SC-5 ownership forensic visibility.
-func (r *Reconciler) createOperation(targetID, kind, rolloutRevision string) (string, error) {
+// Phase 3.9.6: stamps cycle_id (column existed since 1715300008 but was
+// previously unused). Lets operators correlate operations + decisions
+// by reconcile cycle.
+func (r *Reconciler) createOperation(targetID, kind, rolloutRevision, cycleID string) (string, error) {
 	col, err := r.app.Dao().FindCollectionByNameOrId("operations")
 	if err != nil {
 		return "", fmt.Errorf("operations collection: %w", err)
@@ -758,6 +1238,10 @@ func (r *Reconciler) createOperation(targetID, kind, rolloutRevision string) (st
 	rec.Set("rollout_revision", rolloutRevision)
 	// Phase 3.8: ownership stamp. Identity initialized at Start() time.
 	rec.Set("owned_by_pod", string(currentPodIdentity()))
+	// Phase 3.9.6: cycle correlation.
+	if cycleID != "" {
+		rec.Set("cycle_id", cycleID)
+	}
 	if err := r.app.Dao().SaveRecord(rec); err != nil {
 		return "", err
 	}

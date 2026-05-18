@@ -43,15 +43,19 @@ type Config struct {
 	BackoffBase      time.Duration // Base backoff duration
 	BackoffMax       time.Duration // Maximum backoff duration
 	FailureThreshold int           // Failures before circuit opens
+	// Phase 3.9.8: periodic truth audit interval. Runs RunContradictionAudit +
+	// RunInvariantAudit on a background goroutine. 0 disables the goroutine.
+	TruthAuditInterval time.Duration
 }
 
 // DefaultConfig returns the default reconciler configuration
 func DefaultConfig() Config {
 	return Config{
-		Interval:         30 * time.Second,
-		BackoffBase:      30 * time.Second,
-		BackoffMax:       5 * time.Minute,
-		FailureThreshold: 5,
+		Interval:           30 * time.Second,
+		BackoffBase:        30 * time.Second,
+		BackoffMax:         5 * time.Minute,
+		FailureThreshold:   5,
+		TruthAuditInterval: envMinutes("AUTOSTACK_TRUTH_AUDIT_INTERVAL_MINUTES", 15),
 	}
 }
 
@@ -145,6 +149,25 @@ func (r *Reconciler) Metrics() MetricsSnapshot {
 	return r.metrics.Snapshot()
 }
 
+// App returns the PocketBase app reference. Phase 3.9.6: lets HTTP
+// route handlers reach the DB for incident reconstruction without
+// requiring main.go to duplicate the app pointer everywhere.
+func (r *Reconciler) App() *pb.PocketBase {
+	return r.app
+}
+
+// PodID returns the current process's pod identity. Phase 3.9.1
+// exposes it for the metrics endpoint and operator-visible UI.
+func (r *Reconciler) PodID() string {
+	return string(currentPodIdentity())
+}
+
+// Config returns the immutable config this Reconciler was started with.
+// Phase 3.10: exposed so HTTP handlers can report truth audit interval.
+func (r *Reconciler) Config() Config {
+	return r.config
+}
+
 // cooldownActive reports whether a target is currently in a Phase 3.8
 // reconciliation cooldown window. Used to enforce bounded reconciliation
 // economics: a target that repeatedly fails the suspicion guard is
@@ -220,6 +243,46 @@ func (r *Reconciler) Start() {
 		log.Printf("[STARTUP_SWEEP_ERR] %v", err)
 	}
 
+	// Phase 3.9.5: startup invariant audit. Runs AFTER the abandonment
+	// sweep so violations reflect post-recovery state. Fatal violations
+	// REFUSE to start the reconcile loop — operator must investigate.
+	// High/Warning violations open IncidentSourceInvariantViolation
+	// incidents but allow the loop to start.
+	violations := RunInvariantAudit(r.app)
+	if len(violations) > 0 {
+		log.Printf("[STARTUP_INVARIANT_AUDIT] found %d violations", len(violations))
+		for _, v := range violations {
+			log.Printf("[INVARIANT_VIOLATION] name=%s severity=%s target=%s op=%s detail=%s",
+				v.InvariantName, v.Severity, v.TargetID, v.OperationID, v.Detail)
+		}
+		r.RecordViolationsAsIncidents(violations)
+		if HasFatalViolation(violations) {
+			log.Printf("[STARTUP_FATAL_INVARIANT] refusing to start reconcile loop — operator must investigate; incidents created")
+			// Phase 3.9.6: persist the refusal decision so the operator can
+			// reconstruct WHY the reconcile loop did not start, even without
+			// log access.
+			r.RecordDecision(DecisionRecord{
+				TargetID:       "__startup__", // sentinel — no per-target scoping
+				DecisionType:   DecisionStartupRefusedFatal,
+				DecisionReason: "fatal_invariant_violation_detected_at_boot",
+				HumanSummary:   "reconcile loop refused to start: fatal invariant violation detected; operator must investigate",
+				DecisionInputs: map[string]interface{}{
+					"violation_count": len(violations),
+				},
+			})
+			// Do not start the tick. The reconciler stays in the "started"
+			// state to prevent restart loops, but the goroutines do not run.
+			return
+		}
+	} else {
+		log.Printf("[STARTUP_INVARIANT_AUDIT] no violations detected")
+	}
+
+	// Phase 3.9.5: metric rehydration. Seeds in-memory counters from
+	// persistent DB row counts so post-restart snapshots do not lie
+	// about cumulative incident counts.
+	r.RehydrateMetrics()
+
 	// Start the reconciliation ticker
 	go r.run()
 
@@ -228,6 +291,11 @@ func (r *Reconciler) Start() {
 	// Single-pod safe; multi-pod work blocked until Phase 2.7
 	// pod-identity stamping.
 	go RunRuntimeSweepLoop(r.app, r.stopCh)
+
+	// Phase 3.9.8: periodic truth audit goroutine. Runs contradiction +
+	// invariant checks on a configurable interval (default 15m). Disabled
+	// when TruthAuditInterval == 0.
+	r.StartTruthAuditLoop()
 }
 
 // Stop stops the reconciler
@@ -315,6 +383,9 @@ func (r *Reconciler) reconcileAll() {
 	defer func() {
 		if rec := recover(); rec != nil {
 			log.Printf("[PANIC] reconcileAll: %v", rec)
+			if r.metrics != nil {
+				r.metrics.IncCycleFailed()
+			}
 		}
 	}()
 
@@ -322,6 +393,9 @@ func (r *Reconciler) reconcileAll() {
 
 	cycleID := newCycleID()
 	cycleStart := time.Now()
+	if r.metrics != nil {
+		r.metrics.IncCycle()
+	}
 
 	// Find all deployment_targets with cloud deployments (not kubernetes)
 	// and their associated rollouts. We also pull rollouts.manifest (the
@@ -370,8 +444,15 @@ func (r *Reconciler) reconcileAll() {
 			targetsProcessed++
 			if result == reconcileSuccess {
 				targetsSucceeded++
+				if r.metrics != nil {
+					r.metrics.IncTargetReconciled()
+				}
 			} else if result == reconcileFailed {
 				targetsFailed++
+			} else if result == reconcileSkipped {
+				if r.metrics != nil {
+					r.metrics.IncTargetSkipped()
+				}
 			}
 		}
 	}
@@ -449,6 +530,10 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 		r.clearStaleCount(targetID)
 	}
 
+	// Phase 3.9.6: extract cycle + rollout early for decision persistence.
+	earlyCycleID, _ := row["__cycle_id"].(string)
+	earlyRolloutID, _ := row["rollout_id"].(string)
+
 	// Check circuit breaker for this target
 	r.failureMu.RLock()
 	failureCount := r.failures[targetID]
@@ -457,7 +542,80 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 	if failureCount >= r.config.FailureThreshold {
 		log.Printf("Target %s: circuit open (failure count %d >= threshold %d), skipping",
 			targetID, failureCount, r.config.FailureThreshold)
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID,
+			RolloutID:      earlyRolloutID,
+			CycleID:        earlyCycleID,
+			DecisionType:   DecisionCircuitBreakerOpen,
+			DecisionReason: "failure_count_above_threshold",
+			HumanSummary:   "circuit breaker open: target skipped this cycle",
+			DecisionInputs: map[string]interface{}{
+				"failure_count": failureCount,
+				"threshold":     r.config.FailureThreshold,
+			},
+		})
 		return reconcileSkipped
+	}
+
+	// Phase 3.8: reconciliation cooldown.
+	// If a previous tick promoted a hold at threshold, defer this target's
+	// next reconcile by reconciliationCooldown. Bounds retry economics so
+	// a persistently-flapping target does not burn provider quota.
+	if r.cooldownActive(targetID) {
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID,
+			RolloutID:      earlyRolloutID,
+			CycleID:        earlyCycleID,
+			DecisionType:   DecisionCooldownActive,
+			DecisionReason: "phase_3_8_cooldown_window_active",
+			HumanSummary:   "target in 30s cooldown after suspicion-threshold trip",
+		})
+		return reconcileSkipped
+	}
+
+	// Phase 3.9.3 Runtime Integration: respect persisted retry backoff.
+	// If this target is in retry_pending state with a future next_retry_at,
+	// skip; the backoff window is the authoritative pacing mechanism.
+	// If next_retry_at has elapsed, flip to pending so dispatch eligibility
+	// activates on this same tick.
+	currentStatus, _ := row["status"].(string)
+	if currentStatus == "retry_pending" {
+		nextRetryRaw, _ := row["next_retry_at"].(string)
+		if nextRetryRaw != "" {
+			if dueAt, err := time.Parse(time.RFC3339, nextRetryRaw); err == nil {
+				if time.Now().Before(dueAt) {
+					// Still in backoff window.
+					if r.metrics != nil {
+						r.metrics.IncRetrySuppressedCooldown()
+					}
+					r.RecordDecision(DecisionRecord{
+						TargetID:       targetID,
+						RolloutID:      earlyRolloutID,
+						CycleID:        earlyCycleID,
+						DecisionType:   DecisionRetryBackoffWindow,
+						DecisionReason: "next_retry_at_in_future",
+						HumanSummary:   "retry backoff window active until " + nextRetryRaw,
+						DecisionInputs: map[string]interface{}{
+							"next_retry_at": nextRetryRaw,
+						},
+					})
+					return reconcileSkipped
+				}
+			}
+		}
+		// Backoff elapsed (or unparseable timestamp = treat as elapsed).
+		// Activate eligibility and fall through; the dispatch branches
+		// below will pick it up if status now reads pending in row map.
+		r.activateRetryEligibility(targetID)
+		if r.metrics != nil {
+			r.metrics.IncRetryActivated()
+		}
+		// We just flipped the DB status; the in-memory row map is stale.
+		// Refresh the key fields the dispatch branches read.
+		row["status"] = "pending"
+		// Note: shouldDispatchDeploy/Destroy/Rollback read row["status"]
+		// and row["current_operation"], both now consistent with "ready
+		// to dispatch".
 	}
 
 	rolloutID, ok := row["rollout_id"].(string)
@@ -482,7 +640,11 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 		// Refuse to operate. Treat as auth-class failure (no retry storm),
 		// surface a clear marker in the target status.
 		r.updateTargetStatus(targetID, previousStatus, "error", "credential decryption failed")
-		r.recordTargetFailureWithCategory(targetID, FailureAuth)
+		// Phase 3.9.3: credential decrypt failures are an internal logic
+		// problem (key misconfigured), not a provider failure. Classify as
+		// RetryClassInternal so the circuit-breaker treats it correctly and
+		// operators see "operator action required".
+		r.recordTargetFailureWithClass(targetID, providers.RetryClassInternal)
 		return reconcileFailed
 	}
 
@@ -656,9 +818,32 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 	status, err := p.GetStatus(ctx, account, target)
 	if err != nil {
 		sanitizedMsg := sanitizeError(err.Error())
-		category := ClassifyError(err.Error())
-		log.Printf("[FAILURE] cycle=%s target=%s category=%s message=%v", cycleID, targetID, category, sanitizedMsg)
-		r.recordTargetFailureWithCategory(targetID, category)
+		// Phase 3.9.3: canonical provider error classification. NO raw err.Error()
+		// pattern matching outside ClassifyProviderError.
+		retryDecision := providers.ClassifyProviderError(err)
+
+		// Phase 3.9.8: record ambiguous observation before any runtime state
+		// changes. Provider state is unknown on error — the error evidence is
+		// preserved in evidence_json. This call is best-effort; failure does
+		// not abort the error handling path.
+		r.RecordProviderObservation(ProviderObservationInput{
+			TargetID:             targetID,
+			CycleID:              cycleID,
+			Provider:             providerName,
+			ObservationSource:    ObservationSourcePoll,
+			ProviderState:        providers.CanonicalStateUnknown,
+			RuntimeExpectedState: runtimeToExpectedProviderState(previousStatus),
+			Trust:                ObservationTrustAmbiguous,
+			EvidenceJSON: map[string]interface{}{
+				"error_class":     string(retryDecision.Class),
+				"native_code":     retryDecision.NativeCode,
+				"forensic_reason": retryDecision.ForensicReason,
+			},
+		})
+
+		log.Printf("[FAILURE] cycle=%s target=%s retry_class=%s native=%s message=%v",
+			cycleID, targetID, retryDecision.Class, retryDecision.NativeCode, sanitizedMsg)
+		r.recordTargetFailureWithClass(targetID, retryDecision.Class)
 		// Suspicion tolerance: an `updating` target reporting an error
 		// observation may be a provider convergence flap (common in Cloud Run,
 		// possible in ECS). Refuse until the per-provider threshold is reached.
@@ -669,6 +854,43 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 		}
 		r.updateTargetStatus(targetID, previousStatus, "error", sanitizedMsg)
 		return reconcileFailed
+	}
+
+	// Phase 3.9.8: record provider observation before any runtime state changes.
+	// The trust level is derived from the provider's confidence signal, then
+	// overridden to ambiguous when the provider explicitly signals ambiguity.
+	// This call is best-effort; failure does not abort the reconcile path.
+	{
+		obsTrust := classifyObservationTrustFromConfidence(status.ConfidenceLevel)
+		if status.Ambiguous {
+			obsTrust = ObservationTrustAmbiguous
+		}
+		normalizedState := providers.NormalizeProviderState(status.Status)
+		if !providers.IsCanonicalProviderState(normalizedState) {
+			// Unknown state from provider — downgrade trust to preserve forensic
+			// evidence without claiming certainty about an unrecognised value.
+			obsTrust = ObservationTrustAmbiguous
+			if r.metrics != nil {
+				r.metrics.IncProviderUnknownState()
+			}
+		}
+		r.RecordProviderObservation(ProviderObservationInput{
+			TargetID:             targetID,
+			CycleID:              cycleID,
+			Provider:             providerName,
+			ObservationSource:    ObservationSourcePoll,
+			ProviderState:        normalizedState,
+			RuntimeExpectedState: runtimeToExpectedProviderState(previousStatus),
+			Trust:                obsTrust,
+			EvidenceJSON: map[string]interface{}{
+				"confidence_level":   status.ConfidenceLevel,
+				"native_state":       status.NativeState,
+				"ambiguity_source":   status.AmbiguitySource,
+				"ambiguity_detail":   status.AmbiguityDetail,
+				"replicas":           status.Replicas,
+				"available_replicas": status.AvailableReplicas,
+			},
+		})
 	}
 
 	r.clearTargetFailure(targetID)
@@ -689,6 +911,25 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 	//   2. Stale-read: known eventual-consistency pattern (running→updating)
 	//   3. Low-confidence: provider explicit low-confidence signal on regressions
 	//   4. Existing: updating→error suspicion (Phase 3 Change 6)
+	// Phase 3.9.6 helper: when a guard holds, record a decision with the
+	// specific guard subtype in decision_reason. Subject to per-target dedupe.
+	recordHeld := func(reason, summary string) {
+		r.RecordDecision(DecisionRecord{
+			TargetID:       targetID,
+			RolloutID:      rolloutID,
+			CycleID:        cycleID,
+			DecisionType:   DecisionObservationHeld,
+			DecisionReason: reason,
+			HumanSummary:   summary,
+			DecisionInputs: map[string]interface{}{
+				"previous_status":   previousStatus,
+				"provider_reported": status.Status,
+				"confidence_level":  status.ConfidenceLevel,
+				"provider_name":     providerName,
+			},
+		})
+	}
+
 	switch {
 	case !isForwardProgressTransition(previousStatus, status.Status):
 		if !r.noteSuspectError(targetID, providerName) {
@@ -697,6 +938,8 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 			if r.metrics != nil {
 				r.metrics.IncForwardProgressHold()
 			}
+			recordHeld("forward_progress_hold",
+				"observation held: "+previousStatus+"→"+status.Status+" is a regression; pending suspicion threshold")
 			return reconcileFailed
 		}
 		log.Printf("[FORWARD_PROGRESS_PROMOTED] cycle=%s target=%s previous=%s provider_reported=%s — threshold reached",
@@ -710,6 +953,8 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 			if r.metrics != nil {
 				r.metrics.IncStaleReadHold()
 			}
+			recordHeld("stale_read_hold",
+				"observation held: "+previousStatus+"→"+status.Status+" looks like eventual-consistency lag")
 			return reconcileFailed
 		}
 		log.Printf("[STALE_READ_PROMOTED] cycle=%s target=%s previous=%s provider_reported=%s — threshold reached",
@@ -723,6 +968,8 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 			if r.metrics != nil {
 				r.metrics.IncLowConfidenceHold()
 			}
+			recordHeld("low_confidence_hold",
+				"observation held: provider reported low-confidence regression from running")
 			return reconcileFailed
 		}
 
@@ -732,6 +979,8 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 			if r.metrics != nil {
 				r.metrics.IncSuspicionHold()
 			}
+			recordHeld("suspicion_hold_updating_to_error",
+				"observation held: first updating→error observation; awaiting threshold")
 			return reconcileFailed
 		}
 	}
@@ -765,6 +1014,19 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 	if driftState == DriftStateConfirmed || driftState == DriftStateSuspected {
 		driftDetail = "desired revision " + desiredRevision + " differs from deployed revision " + lastDeployedRevision
 	}
+	// Phase 3.6: metrics on drift state transitions.
+	if r.metrics != nil && currentDriftState != string(driftState) {
+		switch driftState {
+		case DriftStateSuspected, DriftStateConfirmed, DriftStateStaleProvider:
+			if currentDriftState == "" || currentDriftState == string(DriftStateNoDrift) || currentDriftState == string(DriftStateUnknown) {
+				r.metrics.IncDriftDetected()
+			}
+		case DriftStateNoDrift:
+			if currentDriftState == string(DriftStateSuspected) || currentDriftState == string(DriftStateConfirmed) || currentDriftState == string(DriftStateStaleProvider) {
+				r.metrics.IncDriftResolved()
+			}
+		}
+	}
 	r.updateDriftState(targetID, currentDriftState, driftState, driftDetail)
 
 	// Intentionally do NOT propagate status onto the rollout record. See
@@ -776,92 +1038,22 @@ func (r *Reconciler) reconcileOne(ctx context.Context, row map[string]interface{
 	return reconcileSuccess
 }
 
-// FailureCategory classifies errors for retry decisions
-type FailureCategory string
-
-const (
-	FailureTransient  FailureCategory = "transient"
-	FailurePermanent FailureCategory = "permanent"
-	FailureQuota     FailureCategory = "quota"
-	FailureAuth      FailureCategory = "auth"
-	FailureTimeout   FailureCategory = "timeout"
-)
-
-// ClassifyError determines the failure category for retry decisions
-func ClassifyError(errMsg string) FailureCategory {
-	errLower := strings.ToLower(errMsg)
-
-	// Auth errors - never retry
-	authPatterns := []string{"unauthorized", "401", "403", "forbidden", "permission denied",
-		"credentials", "authentication", "invalid token", "expired", "access denied"}
-	for _, pattern := range authPatterns {
-		if strings.Contains(errLower, pattern) {
-			return FailureAuth
-		}
-	}
-
-	// Quota errors - never retry
-	quotaPatterns := []string{"quota", "limit exceeded", "rate limit", "429", "billing",
-		"resource exhausted", "rate_limit"}
-	for _, pattern := range quotaPatterns {
-		if strings.Contains(errLower, pattern) {
-			return FailureQuota
-		}
-	}
-
-	// Permanent errors - never retry
-	permanentPatterns := []string{"not found", "not_found", "invalid", "malformed",
-		"bad request", "400", "422", "409", "conflict"}
-	for _, pattern := range permanentPatterns {
-		if strings.Contains(errLower, pattern) {
-			return FailurePermanent
-		}
-	}
-
-	// Timeout errors - maybe retry
-	timeoutPatterns := []string{"timeout", "timed out", "deadline"}
-	for _, pattern := range timeoutPatterns {
-		if strings.Contains(errLower, pattern) {
-			return FailureTimeout
-		}
-	}
-
-	// Default to transient (retry)
-	return FailureTransient
-}
-
-// ShouldRetry returns true if the error category should be retried
-func ShouldRetry(category FailureCategory) bool {
-	switch category {
-	case FailureTransient, FailureTimeout:
-		return true
-	case FailurePermanent, FailureQuota, FailureAuth:
-		return false
-	default:
-		return false
-	}
-}
-
-// recordTargetFailureWithCategory records failure with category-aware logic.
+// Phase 3.9.3 — FailureCategory / ClassifyError / ShouldRetry have been
+// REMOVED. All retry classification flows through pkg/providers/normalize.go
+// ClassifyProviderError() returning a providers.RetryDecision. The circuit
+// breaker is driven by recordTargetFailureWithClass() (see retry.go).
 //
-// Auth and quota errors do not increment the circuit breaker because retrying
-// them is wasted API quota — they require external intervention. Transient,
-// timeout, and permanent errors all increment the per-target failure count
-// AND mark the global lastErrorTime so reconcileWithBackoff actually applies
-// backoff at the cycle level. Without that mark, backoff was unreachable for
-// any failure that wasn't a top-level DB query failure.
-func (r *Reconciler) recordTargetFailureWithCategory(targetID string, category FailureCategory) {
-	if category == FailureAuth || category == FailureQuota {
-		log.Printf("Target %s: %s failure - not retrying, requires intervention", targetID, category)
-		return
-	}
-
-	r.failureMu.Lock()
-	r.failures[targetID]++
-	r.failureMu.Unlock()
-
-	r.recordError()
-}
+// If you are looking for the old semantics, the mapping is:
+//   FailureTransient → RetryClassTransient
+//   FailurePermanent → RetryClassNever
+//   FailureQuota     → RetryClassQuota
+//   FailureAuth      → RetryClassAuth
+//   FailureTimeout   → RetryClassTransient OR RetryClassProviderUncertain
+//                       (depending on whether the request was transmitted)
+//
+// The new model adds: RetryClassRateLimit (distinct from quota),
+// RetryClassProviderUncertain (explicit ambiguity), RetryClassConflict,
+// RetryClassInternal, RetryClassTransport, RetryClassUnknown.
 
 // clearTargetFailure resets failure count for a target
 func (r *Reconciler) clearTargetFailure(targetID string) {
@@ -1077,6 +1269,9 @@ func (r *Reconciler) applyAmbiguityToTarget(targetID, rolloutID, providerName, r
 
 					log.Printf("[AMBIGUITY_TIMEOUT] target=%s source=%s native_state=%s deadline=%s consecutive=%d",
 						targetID, ts.AmbiguitySource, ts.NativeState, existingDeadline, consecutive)
+					if r.metrics != nil {
+						r.metrics.IncAmbiguityTimeout()
+					}
 					msg := "ambiguity unresolved past deadline: source=" + ts.AmbiguitySource + " native=" + ts.NativeState
 					r.writeHistory(rolloutID, targetID, "ambiguous", "failed", "", "", msg, rawProvider, "", "ambiguity-expiry")
 
@@ -1084,6 +1279,9 @@ func (r *Reconciler) applyAmbiguityToTarget(targetID, rolloutID, providerName, r
 					if consecutive >= ambiguityEscalationThreshold {
 						log.Printf("[AMBIGUITY_ESCALATION] target=%s source=%s consecutive=%d — escalating to error",
 							targetID, ts.AmbiguitySource, consecutive)
+						if r.metrics != nil {
+							r.metrics.IncAmbiguityEscalation()
+						}
 						escalateMsg := fmt.Sprintf("ambiguity escalated after %d consecutive timeout observations; source=%s native=%s",
 							consecutive, ts.AmbiguitySource, ts.NativeState)
 						r.writeHistory(rolloutID, targetID, "ambiguous", "failed", "", "", escalateMsg, rawProvider, "", "ambiguity-escalation")
@@ -1108,6 +1306,8 @@ func (r *Reconciler) applyAmbiguityToTarget(targetID, rolloutID, providerName, r
 				deadline = parsed
 			}
 		}
+		// Track whether this is a new ambiguity event for metrics (rec was not ambiguous before).
+		wasAmbiguous := rec.GetBool("lifecycle_ambiguous")
 		rec.Set("lifecycle_ambiguous", true)
 		rec.Set("lifecycle_native_state", ts.NativeState)
 		rec.Set("lifecycle_ambiguity_source", ts.AmbiguitySource)
@@ -1115,14 +1315,21 @@ func (r *Reconciler) applyAmbiguityToTarget(targetID, rolloutID, providerName, r
 		rec.Set("lifecycle_ambiguity_deadline", deadline.UTC().Format(time.RFC3339))
 		log.Printf("[AMBIGUITY_SET] target=%s source=%s native_state=%s deadline=%s",
 			targetID, ts.AmbiguitySource, ts.NativeState, deadline.UTC().Format(time.RFC3339))
+		if r.metrics != nil && !wasAmbiguous {
+			r.metrics.IncAmbiguitySet()
+		}
 	} else {
 		// Ambiguity resolved: clear all state including escalation counter.
+		wasAmbiguous := rec.GetBool("lifecycle_ambiguous")
 		rec.Set("lifecycle_ambiguous", false)
 		rec.Set("lifecycle_native_state", "")
 		rec.Set("lifecycle_ambiguity_source", "")
 		rec.Set("lifecycle_ambiguity_detail", "")
 		rec.Set("lifecycle_ambiguity_deadline", nil)
 		rec.Set("lifecycle_ambiguity_consecutive_timeouts", 0)
+		if r.metrics != nil && wasAmbiguous {
+			r.metrics.IncAmbiguityResolved()
+		}
 	}
 	if err := r.app.Dao().SaveRecord(rec); err != nil {
 		log.Printf("[AMBIGUITY_WRITE_ERR] target=%s save: %v", targetID, err)

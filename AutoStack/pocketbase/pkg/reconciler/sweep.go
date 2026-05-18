@@ -63,14 +63,15 @@ const heartbeatLivenessWindow = 2 * heartbeatInterval
 // local to the reconciler.
 func SweepAbandonedOperations(app *pb.PocketBase) error {
 	var ids []struct {
-		ID        string `db:"id"`
-		TargetID  string `db:"target"`
-		Kind      string `db:"kind"`
-		StartedAt string `db:"started_at"`
-		UpdatedAt string `db:"updated_at"`
+		ID         string `db:"id"`
+		TargetID   string `db:"target"`
+		Kind       string `db:"kind"`
+		StartedAt  string `db:"started_at"`
+		UpdatedAt  string `db:"updated_at"`
+		OwnedByPod string `db:"owned_by_pod"`
 	}
 	err := app.Dao().DB().
-		Select("id", "target", "kind", "started_at", "updated_at").
+		Select("id", "target", "kind", "started_at", "updated_at", "owned_by_pod").
 		From("operations").
 		Where(dbx.NewExp("status = 'in_progress'")).
 		All(&ids)
@@ -83,24 +84,64 @@ func SweepAbandonedOperations(app *pb.PocketBase) error {
 		return nil
 	}
 
+	// Phase 3.8 SC-5: log foreign-pod ops for forensic visibility before reclaim.
+	thisPod := string(currentPodIdentity())
+
 	// Partition into live (heartbeated recently and ever) vs abandoned.
+	//
+	// Phase 3.9.2 lease-aware reclamation: an operation row whose target
+	// has an UNEXPIRED lease held by a foreign pod MUST NOT be reclaimed.
+	// That foreign pod is alive (lease refresh keeps the lease alive); the
+	// operation is in flight. Reclaiming would corrupt orchestration state.
 	type opRow struct {
-		ID, TargetID, Kind string
+		ID, TargetID, Kind, OwnedByPod string
 	}
 	var abandoned []opRow
 	var live []opRow
+	var leaseProtected []opRow // Phase 3.9.2: foreign-pod lease is unexpired
 	cutoff := time.Now().UTC().Add(-heartbeatLivenessWindow)
 	for _, row := range ids {
 		started, _ := time.Parse(time.RFC3339, row.StartedAt)
 		updated, _ := time.Parse(time.RFC3339, row.UpdatedAt)
-		// First-heartbeat guard: if updated_at == started_at (no heartbeat
-		// ever fired), classify as abandoned regardless of age.
 		neverHeartbeated := !updated.After(started)
-		if neverHeartbeated || updated.Before(cutoff) {
-			abandoned = append(abandoned, opRow{row.ID, row.TargetID, row.Kind})
-		} else {
-			live = append(live, opRow{row.ID, row.TargetID, row.Kind})
+		heartbeatStale := updated.Before(cutoff)
+
+		// Phase 3.9.2: per-target lease lookup. A foreign-pod's UNEXPIRED
+		// lease is a hard "do not reclaim" signal regardless of heartbeat age.
+		// We use a separate lookup so a missing lease (legacy pre-3.9.2 op)
+		// falls through to the heartbeat-aged path.
+		leaseHolderIsLive := false
+		leaseHolderForeign := false
+		if row.TargetID != "" && thisPod != "" {
+			holder, valid := lookupLeaseHolderStatus(app, row.TargetID)
+			if valid && holder != "" && holder != thisPod {
+				leaseHolderIsLive = true
+				leaseHolderForeign = true
+			}
 		}
+
+		if leaseHolderIsLive {
+			leaseProtected = append(leaseProtected, opRow{row.ID, row.TargetID, row.Kind, row.OwnedByPod})
+			log.Printf("[STARTUP_SWEEP_LEASE_PROTECTED] operation=%s target=%s kind=%s owned_by_pod=%s lease_holder_foreign=%v — refusing to reclaim",
+				row.ID, row.TargetID, row.Kind, row.OwnedByPod, leaseHolderForeign)
+			continue
+		}
+
+		if row.OwnedByPod != "" && thisPod != "" && row.OwnedByPod != thisPod {
+			// Foreign-pod stamp but no live lease — operator may have run
+			// two pods in the past or the previous pod crashed without
+			// releasing lease. Reclaim is safe because the lease is gone.
+			log.Printf("[STARTUP_SWEEP_FOREIGN_POD_NO_LEASE] operation=%s target=%s kind=%s owned_by_pod=%s this_pod=%s — lease expired or absent; reclaiming",
+				row.ID, row.TargetID, row.Kind, row.OwnedByPod, thisPod)
+		}
+		if neverHeartbeated || heartbeatStale {
+			abandoned = append(abandoned, opRow{row.ID, row.TargetID, row.Kind, row.OwnedByPod})
+		} else {
+			live = append(live, opRow{row.ID, row.TargetID, row.Kind, row.OwnedByPod})
+		}
+	}
+	if len(leaseProtected) > 0 {
+		log.Printf("[STARTUP_SWEEP] lease-protected ops preserved (foreign pods alive): %d", len(leaseProtected))
 	}
 
 	if len(live) > 0 {
@@ -219,7 +260,19 @@ func RuntimeSweep(app *pb.PocketBase) error {
 	log.Printf("[RUNTIME_SWEEP] found %d stale-heartbeat in_progress operations cutoff=%s", len(rows), cutoff)
 	now := time.Now().UTC().Format(time.RFC3339)
 	const reclaimMsg = "abandoned: heartbeat went stale (runtime sweep)"
+	thisPod := string(currentPodIdentity())
 	for _, row := range rows {
+		// Phase 3.9.2: refuse reclaim if a foreign live lease holds the target.
+		// This is the critical multi-pod safety check at runtime.
+		if row.TargetID != "" {
+			holder, valid := lookupLeaseHolderStatus(app, row.TargetID)
+			if valid && holder != thisPod && holder != "" {
+				log.Printf("[RUNTIME_SWEEP_LEASE_PROTECTED] operation=%s target=%s lease_holder=%s — refusing to reclaim live foreign lease",
+					row.ID, row.TargetID, holder)
+				continue
+			}
+		}
+
 		op, err := app.Dao().FindRecordById("operations", row.ID)
 		if err != nil {
 			log.Printf("[RUNTIME_SWEEP] find op %s: %v", row.ID, err)
@@ -260,6 +313,31 @@ func RuntimeSweep(app *pb.PocketBase) error {
 		log.Printf("[OP_ABANDONED_RUNTIME] operation=%s target=%s kind=%s", row.ID, row.TargetID, row.Kind)
 	}
 	return nil
+}
+
+// lookupLeaseHolderStatus returns (holderPodID, valid) for a lease key.
+// valid is true ONLY if a lease row exists AND lease_expires_at is in the
+// future. Used by the sweep to refuse reclaiming operations owned by a
+// live peer pod.
+//
+// DB error → (empty, false): conservative. The sweep falls through to
+// heartbeat-aged reclaim — accepting the small risk of double-dispatch
+// rather than the larger risk of stuck operations.
+func lookupLeaseHolderStatus(app *pb.PocketBase, leaseKey string) (holder string, valid bool) {
+	var rows []struct {
+		HolderPodID string `db:"holder_pod_id"`
+		Valid       int    `db:"is_valid"`
+	}
+	err := app.Dao().DB().
+		Select("holder_pod_id",
+			"CASE WHEN lease_expires_at > datetime('now') THEN 1 ELSE 0 END AS is_valid").
+		From("reconciler_leases").
+		Where(dbx.NewExp("lease_key = {:k}", dbx.Params{"k": leaseKey})).
+		All(&rows)
+	if err != nil || len(rows) == 0 {
+		return "", false
+	}
+	return rows[0].HolderPodID, rows[0].Valid == 1
 }
 
 // writeAbandonHistory inserts a deployment_history row reflecting the

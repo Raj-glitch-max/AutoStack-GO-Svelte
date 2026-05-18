@@ -44,24 +44,28 @@ package reconciler
 // state regression. The dispatcher's claimTarget CAS handles contention.
 var targetTransitions = map[string][]string{
 	"pending": {
-		"creating",   // dispatcher claims and begins deploy
-		"error",      // spec-parse failure before claim (markTargetError)
-		"deleting",   // rare: deleted before first deploy attempt
+		"creating",      // dispatcher claims and begins deploy
+		"error",         // spec-parse failure before claim (markTargetError)
+		"deleting",      // rare: deleted before first deploy attempt
+		"retry_pending", // Phase 3.9.3: AcquireLease denied + retry scheduled
 	},
 	"creating": {
-		"updating",   // deploy succeeded; awaiting GetStatus convergence
-		"running",    // deploy succeeded and GetStatus confirmed healthy immediately
-		"error",      // deploy failed
-		"deleting",   // pending_destroy was set during deploy; rerouted post-success
-		"partial",    // partial success (Phase 3.2)
-		"ambiguous",  // provider silent during creation
+		"updating",      // deploy succeeded; awaiting GetStatus convergence
+		"running",       // deploy succeeded and GetStatus confirmed healthy immediately
+		"error",         // deploy failed terminally
+		"deleting",      // pending_destroy was set during deploy; rerouted post-success
+		"partial",       // partial success (Phase 3.2)
+		"ambiguous",     // provider silent during creation
+		"retry_pending", // Phase 3.9.3: scheduled retry after retryable failure
+		"pending",       // Phase 3.9.3: stale-spec or lease loss; safe to re-dispatch
 	},
 	"updating": {
-		"running",    // GetStatus confirms healthy after update
-		"error",      // GetStatus or suspicion says error
-		"deleting",   // pending_destroy rerouted post-success
-		"partial",    // partial success (Phase 3.2)
-		"ambiguous",  // provider silent during update
+		"running",       // GetStatus confirms healthy after update
+		"error",         // GetStatus or suspicion says error terminally
+		"deleting",      // pending_destroy rerouted post-success
+		"partial",       // partial success (Phase 3.2)
+		"ambiguous",     // provider silent during update
+		"retry_pending", // Phase 3.9.3: scheduled retry after retryable failure
 	},
 	"running": {
 		"updating",   // new deploy dispatched
@@ -76,14 +80,29 @@ var targetTransitions = map[string][]string{
 		"creating",   // reconciler retry on next dispatch (auto-retry path, Phase 3+)
 	},
 	"deleting": {
-		"deleted",    // destroy confirmed
-		"error",      // destroy failed
-		"ambiguous",  // destroy confirmation timed out (S-4)
+		"deleted",       // destroy confirmed
+		"error",         // destroy failed
+		"ambiguous",     // destroy confirmation timed out (S-4)
+		"retry_pending", // Phase 3.9.3: retryable destroy failure
 	},
 	"rolling_back": {
-		"rolled_back", // rollback confirmed
-		"error",       // rollback failed
-		"ambiguous",   // provider silent during rollback
+		"rolled_back",   // rollback confirmed
+		"error",         // rollback failed
+		"ambiguous",     // provider silent during rollback
+		"retry_pending", // Phase 3.9.3: retryable rollback failure
+	},
+	// Phase 3.9.3: retry_pending is the post-failure state when the retry
+	// engine has scheduled a future attempt. The reconciler skips dispatch
+	// while next_retry_at is in the future; when it elapses, the reconciler
+	// flips retry_pending → pending so the dispatch path activates.
+	//
+	// Operator transitions: an operator may also flip retry_pending → error
+	// (give up) or retry_pending → deleting (destroy without retrying).
+	"retry_pending": {
+		"pending",   // backoff expired; dispatcher will re-attempt
+		"error",     // operator gave up OR retry budget exhausted (terminal)
+		"deleting",  // operator-initiated destroy without retry
+		"creating",  // dispatcher re-claimed directly (skip pending state)
 	},
 	"rolled_back": {
 		"pending",    // operator re-deploy after rollback
