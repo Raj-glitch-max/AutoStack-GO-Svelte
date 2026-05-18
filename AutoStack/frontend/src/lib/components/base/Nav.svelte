@@ -40,10 +40,31 @@
 </script>
 
 <nav class="bg-primary-600 dark:bg-primary-600 flex py-2">
-  <div class="flex justify-between w-full max-w-screen-2xl mx-auto px-4">
+  <div class="flex justify-between w-full max-w-screen-2xl mx-auto px-4 items-center">
     <a href="/app" class="justify-start">
-      <img src="/images/logo_background.png" class="mr-3 h-10" alt="Flowbite Logo" />
+      <img src="/images/logo_background.png" class="mr-3 h-10" alt="AutoStack Logo" />
     </a>
+
+    <!-- Primary section navigation: makes the platform's main surfaces
+         discoverable. Hidden on small screens to avoid overflow. -->
+    <div class="hidden md:flex items-center gap-1 ml-2">
+      {#each [
+        { href: "/app", label: "Projects", match: "/app", exact: true },
+        { href: "/app/platform", label: "Platform", match: "/app/platform" },
+        { href: "/app/cloud", label: "Cloud", match: "/app/cloud" },
+        { href: "/app/runtime/deployments", label: "Runtime", match: "/app/runtime" },
+      ] as nav}
+        {@const active = nav.exact ? $page.url.pathname === nav.match : $page.url.pathname.startsWith(nav.match)}
+        <a
+          href={nav.href}
+          class="px-3 py-1.5 text-sm rounded-md transition-colors {active
+            ? 'bg-white/20 text-white font-medium'
+            : 'text-white/80 hover:bg-white/10 hover:text-white'}"
+        >
+          {nav.label}
+        </a>
+      {/each}
+    </div>
     <!-- only /app/projects/${id}/deployments/ -->
     {#if $page.url.pathname.startsWith(`/app/projects/${$selectedProjectId}`)}
       <div in:fade={{ duration: 100 }} out:fade={{ duration: 100 }}>
