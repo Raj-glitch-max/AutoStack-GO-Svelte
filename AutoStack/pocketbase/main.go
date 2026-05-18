@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -9,7 +10,9 @@ import (
 	"github.com/janlauber/one-click/pkg/controller"
 	"github.com/janlauber/one-click/pkg/env"
 	"github.com/janlauber/one-click/pkg/k8s"
+	platformapi "github.com/janlauber/one-click/pkg/platform/api"
 	"github.com/janlauber/one-click/pkg/reconciler"
+	"github.com/janlauber/one-click/pkg/runtime_deploy"
 	"github.com/janlauber/one-click/pkg/secrets"
 	"github.com/janlauber/one-click/pkg/watcher"
 	"github.com/labstack/echo/v5"
@@ -200,6 +203,119 @@ func main() {
 			return controller.HandleCostEstimate(c, app)
 		}, apis.RequireRecordAuth("users"))
 
+		// Phase 3.9.1 — Reconciler observability endpoints.
+		//
+		// /metrics — JSON snapshot of in-memory counters (atomic; restart resets)
+		// /metrics/prom — Prometheus text exposition; cardinality-bounded
+		// /incident/:targetID — Phase 3.9.6 forensic reconstruction
+		//
+		// Auth: gated by the same PocketBase user auth as other routes.
+		// /metrics/prom is also gated to prevent unauthenticated discovery;
+		// operators wanting scraping should configure their scraper with
+		// the appropriate auth credentials.
+		e.Router.GET("/api/v1/reconciler/metrics", controller.HandleReconcilerMetrics,
+			apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/metrics/prom", controller.HandleReconcilerMetricsProm,
+			apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/incident/:targetID", controller.HandleReconcilerIncident,
+			apis.RequireRecordAuth("users"))
+
+		// Phase 3.9.4 — persistent incident operator surface.
+		e.Router.GET("/api/v1/reconciler/incidents", controller.HandleReconcilerIncidentList,
+			apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/incidents/:id", controller.HandleReconcilerIncidentGet,
+			apis.RequireRecordAuth("users"))
+		e.Router.POST("/api/v1/reconciler/incidents/:id/transition", controller.HandleReconcilerIncidentTransition,
+			apis.RequireRecordAuth("users"))
+
+		// Phase 3.9.5 — runtime determinism + forensic export.
+		e.Router.GET("/api/v1/reconciler/forensic-snapshot/:targetID",
+			controller.HandleReconcilerForensicSnapshot,
+			apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/invariant-audit",
+			controller.HandleReconcilerInvariantAudit,
+			apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/metric-truthfulness",
+			controller.HandleReconcilerMetricTruthfulness,
+			apis.RequireRecordAuth("users"))
+
+		// Phase 3.9.6 — runtime explainability surfaces.
+		e.Router.GET("/api/v1/reconciler/decisions",
+			controller.HandleReconcilerDecisions,
+			apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/narrative/:targetID",
+			controller.HandleReconcilerNarrative,
+			apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/contradictions",
+			controller.HandleReconcilerContradictions,
+			apis.RequireRecordAuth("users"))
+
+		// Phase 3.10 — operator truth surface.
+		e.Router.GET("/api/v1/reconciler/observations", func(c echo.Context) error {
+			return controller.HandleProviderObservationList(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/drifts", func(c echo.Context) error {
+			return controller.HandleProviderDriftList(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/reconciler/truth-status", func(c echo.Context) error {
+			return controller.HandleRuntimeTruthStatus(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.POST("/api/v1/reconciler/verify-export-hash",
+			controller.HandleVerifyExportHash,
+			apis.RequireRecordAuth("users"))
+
+		// Phase 4.8 — Operational Platform Surfaces (read-only query layer).
+		// When AUTOSTACK_DEMO_MODE=true, the surface is backed by a seeded
+		// in-memory store with three example executions so the UI renders
+		// meaningful data. Otherwise the Noop store is used; production wires
+		// the real PocketBase-backed store once snapshot persistence is up.
+		platformGroup := e.Router.Group("/api/v1/platform",
+			apis.RequireRecordAuth("users"))
+		var pstore platformapi.PlatformStore
+		if os.Getenv("AUTOSTACK_DEMO_MODE") == "true" || os.Getenv("AUTOSTACK_DEMO_MODE") == "1" {
+			pstore = platformapi.NewSeededPlatformStore()
+			log.Printf("[platform-api] using SeededPlatformStore (AUTOSTACK_DEMO_MODE=true)")
+		} else {
+			pstore = platformapi.NoopPlatformStore{}
+		}
+		platformapi.RegisterRoutes(platformGroup, pstore)
+
+		// ── Real local-Docker runtime deployment engine ──────────────────
+		// Lifecycle: planned → validating → provisioning → deploying →
+		// verifying → stabilized → certified.  Real docker commands;
+		// real state transitions persisted to runtime_deployments +
+		// runtime_deployment_events. See pkg/runtime_deploy.
+		e.Router.GET("/api/v1/runtime/health", func(c echo.Context) error {
+			return controller.HandleRuntimeHealth(c, app)
+		}) // intentionally unauthenticated — health probe must always answer
+		e.Router.POST("/api/v1/runtime/deployments", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentCreate(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/runtime/deployments", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentList(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/runtime/deployments/:id", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentGet(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/runtime/deployments/:id/events", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentEvents(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/runtime/deployments/:id/logs", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentLogs(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.POST("/api/v1/runtime/deployments/:id/rollback", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentRollback(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/runtime/deployments/:id/observations", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentObservations(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.GET("/api/v1/runtime/deployments/:id/replay", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentReplay(c, app)
+		}, apis.RequireRecordAuth("users"))
+		e.Router.DELETE("/api/v1/runtime/deployments/:id", func(c echo.Context) error {
+			return controller.HandleRuntimeDeploymentDestroy(c, app)
+		}, apis.RequireRecordAuth("users"))
+
 		return nil
 	})
 
@@ -231,12 +347,37 @@ func main() {
 		// — see Reconciler.Start for the ordering invariant.
 		cloudReconciler := reconciler.New(app, reconciler.DefaultConfig())
 		cloudReconciler.Start()
+		// Phase 3.9.1: publish the reconciler reference so HTTP handlers
+		// registered in OnBeforeServe can read metrics + reconstruct
+		// incidents. Singleton-by-design; one reconciler per process.
+		reconciler.SetActive(cloudReconciler)
 
 		// Phase 2.5: start the retention/cleanup goroutine. Best-effort
 		// retention of `operations` and `deployment_history`; honors
 		// AUTOSTACK_CLEANUP_ENABLED=false to skip entirely (compliance
 		// hold use-case).
 		reconciler.StartCleanupOnBoot(app)
+
+		// Real local-Docker runtime engine. Probes docker availability;
+		// on failure, the engine still runs but rejects deployments with
+		// a clear error message (no silent fallback). Disable entirely
+		// with AUTOSTACK_RUNTIME_ENGINE=off.
+		if os.Getenv("AUTOSTACK_RUNTIME_ENGINE") != "off" {
+			rtStore := runtime_deploy.NewStore(app)
+			rtDriver := runtime_deploy.NewDockerDriver()
+			rtEngine := runtime_deploy.NewEngine(rtStore, rtDriver)
+			rtEngine.Start(context.Background())
+			controller.SetActiveRuntime(rtEngine, rtStore, rtDriver)
+			log.Printf("[runtime-engine] started worker_id=%s", runtime_deploy.WorkerID())
+
+			// Continuous reconciliation loop. Runs on its own ticker so the
+			// lifecycle engine and the drift detector don't share a goroutine.
+			// Disable with AUTOSTACK_RECONCILER=off.
+			if os.Getenv("AUTOSTACK_RECONCILER") != "off" {
+				rtReconciler := runtime_deploy.NewReconciler(rtStore, rtDriver)
+				rtReconciler.Start(context.Background())
+			}
+		}
 
 		return nil
 	})
